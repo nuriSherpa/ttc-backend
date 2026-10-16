@@ -1,4 +1,4 @@
-import type { WeatherSnapshot, HourlyRow } from './types.js';
+import type { WeatherSnapshot, HourlyRow, ForecastHour } from './types.js';
 import { classifyWmo } from './condition.js';
 
 const FORECAST = 'https://api.open-meteo.com/v1/forecast';
@@ -188,4 +188,63 @@ export async function fetchArchiveBatch(
   const arr = await getJson(url, 60_000, cells.length, 'archive');
   const now = Date.now();
   return arr.map((r, cellIdx) => ({ cellIdx, rows: parseHourly(r, now) }));
+}
+
+// ---------------------------------------------------------------------------
+// Forecast: future hours. Unlike history, we keep hours that haven't happened
+// yet — the whole point is to look forward.
+// ---------------------------------------------------------------------------
+
+function parseForecastHourly(r: any, maxHours: number): ForecastHour[] {
+  const h = r?.hourly ?? {};
+  const times: number[] = h.time ?? [];
+  const out: ForecastHour[] = [];
+  const nowMs = Date.now();
+
+  for (let i = 0; i < times.length && out.length < maxHours; i++) {
+    const ms = Number(times[i]) * 1000;
+    if (!Number.isFinite(ms)) continue;
+    // Skip past hours; we only want "now" forward.
+    if (ms + 3_600_000 < nowMs) continue;
+
+    const temp: number | null = h.temperature_2m?.[i] ?? null;
+    const wind: number | null = h.wind_speed_10m?.[i] ?? null;
+    const wc: number | null = h.weather_code?.[i] ?? null;
+    if (temp == null && wind == null && wc == null) continue;
+
+    const precip: number = h.precipitation?.[i] ?? 0;
+    const { condition, severity } = classifyWmo(wc, precip);
+    const at = new Date(ms);
+    const { date, hour } = localParts(at);
+
+    out.push({
+      at: ms,
+      localDate: date,
+      localHour: hour,
+      tempC: temp,
+      precipMm: precip,
+      snowCm: h.snowfall?.[i] ?? 0,
+      windKph: wind,
+      weatherCode: wc,
+      condition,
+      severity,
+    });
+  }
+  return out;
+}
+
+export async function fetchForecastBatch(
+  cells: Coord[],
+  hours: number = 24,
+): Promise<{ cellIdx: number; rows: ForecastHour[] }[]> {
+  if (cells.length === 0) return [];
+  const url = new URL(FORECAST);
+  coordParams(url, cells);
+  url.searchParams.set('hourly', HOURLY_VARS);
+  url.searchParams.set('forecast_days', '2');
+  url.searchParams.set('timeformat', 'unixtime');
+  url.searchParams.set('timezone', TZ);
+
+  const arr = await getJson(url, 20_000, cells.length, 'forecast');
+  return arr.map((r, cellIdx) => ({ cellIdx, rows: parseForecastHourly(r, hours) }));
 }

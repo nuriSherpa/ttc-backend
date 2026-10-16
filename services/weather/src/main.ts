@@ -3,12 +3,13 @@ import { makeLogger } from './logger.js';
 import { makePool, waitForPg } from './pg.js';
 import { makeRedis } from './redis.js';
 import { rebuildGrid, loadGrid } from './grid.js';
-import { runLiveSync, runHistorySync } from './sync.js';
+import { runLiveSync, runHistorySync, runForecastSync } from './sync.js';
 import { backfill } from './backfill.js';
 import type { GridCell } from './types.js';
 
-const LIVE_MS = 15 * 60_000;
-const HIST_MS = 60 * 60_000;
+const LIVE_MS = 15 * 60_000; // 15 min
+const HIST_MS = 60 * 60_000; // 60 min
+const FORECAST_MS = 30 * 60_000; // 30 min
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -99,12 +100,22 @@ async function main(): Promise<void> {
     log.info(stats, 'history sync done');
   });
 
+  const forecast = guarded('forecast sync', async () => {
+    log.info(await runForecastSync(cells, redis, log, 24), 'forecast sync done');
+  });
+
   await live();
   await history();
+  await forecast();
+
   timers.push(setInterval(() => void live(), LIVE_MS));
   timers.push(setInterval(() => void history(), HIST_MS));
+  timers.push(setInterval(() => void forecast(), FORECAST_MS));
 
-  log.info({ live_ms: LIVE_MS, hist_ms: HIST_MS }, 'weather service ready');
+  log.info(
+    { live_ms: LIVE_MS, hist_ms: HIST_MS, forecast_ms: FORECAST_MS },
+    'weather service ready',
+  );
 }
 
 main().catch((err) => {

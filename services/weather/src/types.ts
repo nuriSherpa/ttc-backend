@@ -42,3 +42,30 @@ export interface SyncStats {
   errors: number;
   ms: number;
 }
+
+export interface ForecastHour {
+  at: number; // epoch ms (UTC)
+  localDate: string; // YYYY-MM-DD (Toronto)
+  localHour: number; // 0..23
+  tempC: number | null;
+  precipMm: number;
+  snowCm: number;
+  windKph: number | null;
+  weatherCode: number | null;
+  condition: WeatherSnapshot['condition'];
+  severity: 0 | 1 | 2 | 3;
+}
+
+export interface ForecastBlob {
+  lat: number;
+  lon: number;
+  generatedAt: number; // epoch ms
+  hours: ForecastHour[]; // sorted ascending by `at`
+}
+
+export interface WeatherAdvice {
+  level: 'none' | 'info' | 'warn' | 'alert';
+  icon: 'sun' | 'cloud' | 'fog' | 'rain' | 'snow' | 'storm';
+  title: string;
+  detail: string;
+}
