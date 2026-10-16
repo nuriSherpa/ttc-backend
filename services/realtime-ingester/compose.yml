@@ -1,0 +1,41 @@
+services:
+  rt-ingestor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ttc-rt-ingestor:latest
+    container_name: ttc-rt-ingestor
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: info
+      MODE: loop
+      INTERVAL_MS: '15000'
+      DATABASE_URL: postgresql://ttc_admin:${POSTGRES_PASSWORD}@postgres:5432/ttc
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      FEED_VEHICLES: https://bustime.ttc.ca/gtfsrt/vehicles
+      FEED_TRIPS: https://bustime.ttc.ca/gtfsrt/trips
+      FEED_ALERTS: https://bustime.ttc.ca/gtfsrt/alerts
+      FETCH_TIMEOUT_MS: '10000'
+      FETCH_RETRIES: '2'
+    logging:
+      driver: json-file
+      options:
+        max-size: '50m'
+        max-file: '5'
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '/app/healthcheck.js']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s

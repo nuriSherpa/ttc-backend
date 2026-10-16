@@ -1,0 +1,9 @@
+# Root compose: stitches every service's own compose file into one project.
+# Add a service = create services/<name>/compose.yml and list it here.
+name: ttc
+
+include:
+  - services/database/compose.yml
+  # - services/api/compose.yml                 # Node backend API      (later)
+  - services/realtime-ingester/compose.yml # GTFS-RT -> Postgres/Redis (later)
+  - services/weather/compose.yml

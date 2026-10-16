@@ -1,0 +1,51 @@
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*_rsa
+*_ed25519
+
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+.npm/
+.pnpm-store/
+yarn-error.log
+
+# Docker
+*.log
+.docker/
+docker-compose.override.yml
+
+# Data — large, regenerable
+Data/
+data/*.txt
+_archive/Data/
+*.zip
+pgdata/
+
+# State
+maintainer_state/
+state/
+*.tmp
+*.bak
+*.swp
+*~
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# Logs
+logs/
+npm-debug.log*
+
+# Env-specific
+*.local
+.cache/
+coverage/

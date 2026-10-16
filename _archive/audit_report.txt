@@ -1,0 +1,528 @@
+┌──────────────────────────┐
+│         section          │
+│         varchar          │
+├──────────────────────────┤
+│ === 1. FEED / AGENCY === │
+└──────────────────────────┘
+┌─────────────────────┬────────────────────┬───────────┬─────────────────┬───────────────┬──────────────┐
+│ feed_publisher_name │ feed_publisher_url │ feed_lang │ feed_start_date │ feed_end_date │ feed_version │
+│       varchar       │      varchar       │  varchar  │     varchar     │    varchar    │   varchar    │
+├─────────────────────┼────────────────────┼───────────┼─────────────────┼───────────────┼──────────────┤
+│ TTC                 │ https://www.ttc.ca │ en        │ 20260930        │ 20261031      │ S1000542     │
+└─────────────────────┴────────────────────┴───────────┴─────────────────┴───────────────┴──────────────┘
+┌───────────┬─────────────┬────────────────────┬─────────────────┬─────────────┬──────────────┬─────────────────────────────────────┬─────────────────┬──────────────┐
+│ agency_id │ agency_name │     agency_url     │ agency_timezone │ agency_lang │ agency_phone │           agency_fare_url           │  agency_email   │ cemv_support │
+│  varchar  │   varchar   │      varchar       │     varchar     │   varchar   │   varchar    │               varchar               │     varchar     │   varchar    │
+├───────────┼─────────────┼────────────────────┼─────────────────┼─────────────┼──────────────┼─────────────────────────────────────┼─────────────────┼──────────────┤
+│ 1         │ TTC         │ https://www.ttc.ca │ America/Toronto │ en          │ 416-393-4636 │ https://www.ttc.ca/Fares-and-passes │ opendata@ttc.ca │ 1            │
+└───────────┴─────────────┴────────────────────┴─────────────────┴─────────────┴──────────────┴─────────────────────────────────────┴─────────────────┴──────────────┘
+┌──────────────────────────────────┐
+│             section              │
+│             varchar              │
+├──────────────────────────────────┤
+│ === 2. CALENDAR + EXCEPTIONS === │
+└──────────────────────────────────┘
+┌────────────┬─────────┬─────────┬───────────┬──────────┬─────────┬──────────┬─────────┬────────────┬──────────┐
+│ service_id │ monday  │ tuesday │ wednesday │ thursday │ friday  │ saturday │ sunday  │ start_date │ end_date │
+│  varchar   │ varchar │ varchar │  varchar  │ varchar  │ varchar │ varchar  │ varchar │  varchar   │ varchar  │
+├────────────┼─────────┼─────────┼───────────┼──────────┼─────────┼──────────┼─────────┼────────────┼──────────┤
+│ 1          │ 1       │ 1       │ 1         │ 1        │ 1       │ 0        │ 0       │ 20260930   │ 20261031 │
+│ 2          │ 0       │ 0       │ 0         │ 0        │ 0       │ 1        │ 0       │ 20260930   │ 20261031 │
+│ 3          │ 0       │ 0       │ 0         │ 0        │ 0       │ 0        │ 1       │ 20260930   │ 20261031 │
+│ 4          │ 0       │ 0       │ 0         │ 0        │ 0       │ 0        │ 0       │ 20260930   │ 20261031 │
+│ 4401       │ 1       │ 0       │ 1         │ 1        │ 0       │ 0        │ 0       │ 20260930   │ 20261031 │
+│ 4501       │ 0       │ 1       │ 0         │ 0        │ 1       │ 0        │ 0       │ 20260930   │ 20261031 │
+│ 5          │ 1       │ 0       │ 0         │ 0        │ 0       │ 0        │ 0       │ 20260930   │ 20261031 │
+│ 7001       │ 0       │ 1       │ 1         │ 1        │ 0       │ 0        │ 0       │ 20260930   │ 20261031 │
+└────────────┴─────────┴─────────┴───────────┴──────────┴─────────┴──────────┴─────────┴────────────┴──────────┘
+┌────────────┬──────────┬────────────────┐
+│ service_id │   date   │ exception_type │
+│  varchar   │ varchar  │    varchar     │
+├────────────┼──────────┼────────────────┤
+│ 5          │ 20261005 │ 2              │
+│ 4          │ 20261012 │ 1              │
+│ 1          │ 20261012 │ 2              │
+│ 5          │ 20261012 │ 1              │
+│ 5          │ 20261019 │ 2              │
+│ 5          │ 20261026 │ 2              │
+└────────────┴──────────┴────────────────┘
+┌────────────┬───────┐
+│ service_id │ trips │
+│  varchar   │ int64 │
+├────────────┼───────┤
+│ 1          │ 40407 │
+│ 2          │ 34203 │
+│ 3          │ 30905 │
+│ 5          │ 30347 │
+│ 4          │  2002 │
+│ 4501       │    16 │
+│ 7001       │    16 │
+│ 4401       │    14 │
+└────────────┴───────┘
+┌────────────────────────────────────────────────────────┐
+│                        section                         │
+│                        varchar                         │
+├────────────────────────────────────────────────────────┤
+│ === 3. COLUMN PROFILE (null %, min, max, distinct) === │
+└────────────────────────────────────────────────────────┘
+┌─────────┐
+│  file   │
+│ varchar │
+├─────────┤
+│ stops   │
+└─────────┘
+┌─────────────────────┬─────────────┬─────────────────────────────────┬─────────────────────────────────────────────────┬───────────────┬───────┬───────┬───────┬───────┬───────┬───────┬─────────────────┐
+│     column_name     │ column_type │               min               │                       max                       │ approx_unique │  avg  │  std  │  q25  │  q50  │  q75  │ count │ null_percentage │
+│       varchar       │   varchar   │             varchar             │                     varchar                     │     int64     │ int32 │ int32 │ int32 │ int32 │ int32 │ int64 │  decimal(9,2)   │
+├─────────────────────┼─────────────┼─────────────────────────────────┼─────────────────────────────────────────────────┼───────────────┼───────┼───────┼───────┼───────┼───────┼───────┼─────────────────┤
+│ stop_id             │ VARCHAR     │ 1                               │ 9999                                            │         10008 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │            0.00 │
+│ stop_code           │ VARCHAR     │ 1                               │ 9999                                            │         10008 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │            0.00 │
+│ stop_name           │ VARCHAR     │ 1 Front St West - Union Station │ Yorkland Blvd (South) at Consumers Rd West Side │          6985 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │            0.00 │
+│ stop_desc           │ VARCHAR     │ NULL                            │ Parent station node for Yorkdale                │           123 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │           99.04 │
+│ stop_lat            │ VARCHAR     │ 43.592111                       │ 43.90975                                        │         11498 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │           17.72 │
+│ stop_lon            │ VARCHAR     │ -79.123111                      │ -79.649908                                      │         11362 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │           17.72 │
+│ zone_id             │ VARCHAR     │ NULL                            │ NULL                                            │             0 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │          100.00 │
+│ stop_url            │ VARCHAR     │ NULL                            │ NULL                                            │             0 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │          100.00 │
+│ location_type       │ VARCHAR     │ 0                               │ 3                                               │             4 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │            0.00 │
+│ parent_station      │ VARCHAR     │ 11860                           │ 7906                                            │           121 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │           75.59 │
+│ stop_timezone       │ VARCHAR     │ NULL                            │ NULL                                            │             0 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │          100.00 │
+│ wheelchair_boarding │ VARCHAR     │ 0                               │ 2                                               │             3 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │            0.00 │
+│ level_id            │ VARCHAR     │ 300000                          │ 300325                                          │           255 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │           77.41 │
+│ tts_stop_name       │ VARCHAR     │ NULL                            │ NULL                                            │             0 │  NULL │  NULL │  NULL │  NULL │  NULL │ 12001 │          100.00 │
+└─────────────────────┴─────────────┴─────────────────────────────────┴─────────────────────────────────────────────────┴───────────────┴───────┴───────┴───────┴───────┴───────┴───────┴─────────────────┘
+  14 rows                                                                                                                                                                                      12 columns
+┌─────────┐
+│  file   │
+│ varchar │
+├─────────┤
+│ routes  │
+└─────────┘
+┌──────────────────┬─────────────┬─────────────────┬────────────────────┬───────────────┬───────┬───────┬───────┬───────┬───────┬───────┬─────────────────┐
+│   column_name    │ column_type │       min       │        max         │ approx_unique │  avg  │  std  │  q25  │  q50  │  q75  │ count │ null_percentage │
+│     varchar      │   varchar   │     varchar     │      varchar       │     int64     │ int32 │ int32 │ int32 │ int32 │ int32 │ int64 │  decimal(9,2)   │
+├──────────────────┼─────────────┼─────────────────┼────────────────────┼───────────────┼───────┼───────┼───────┼───────┼───────┼───────┼─────────────────┤
+│ route_id         │ VARCHAR     │ 1               │ 996                │           229 │  NULL │  NULL │  NULL │  NULL │  NULL │   235 │            0.00 │
+│ agency_id        │ VARCHAR     │ 1               │ 1                  │             1 │  NULL │  NULL │  NULL │  NULL │  NULL │   235 │            0.00 │
+│ route_short_name │ VARCHAR     │ 1               │ 996                │           229 │  NULL │  NULL │  NULL │  NULL │  NULL │   235 │            0.00 │
+│ route_long_name  │ VARCHAR     │ Airport Express │ York Mills Express │           178 │  NULL │  NULL │  NULL │  NULL │  NULL │   235 │            0.00 │
+│ route_desc       │ VARCHAR     │ NULL            │ NULL               │             0 │  NULL │  NULL │  NULL │  NULL │  NULL │   235 │          100.00 │
+│ route_type       │ VARCHAR     │ 0               │ 3                  │             3 │  NULL │  NULL │  NULL │  NULL │  NULL │   235 │            0.00 │
+│ route_url        │ VARCHAR     │ NULL            │ NULL               │             0 │  NULL │  NULL │  NULL │  NULL │  NULL │   235 │          100.00 │
+│ route_color      │ VARCHAR     │ 0054A6          │ FF8000             │            10 │  NULL │  NULL │  NULL │  NULL │  NULL │   235 │            0.00 │
+│ route_text_color │ VARCHAR     │ 000000          │ FFFFFF             │             2 │  NULL │  NULL │  NULL │  NULL │  NULL │   235 │            0.00 │
+└──────────────────┴─────────────┴─────────────────┴────────────────────┴───────────────┴───────┴───────┴───────┴───────┴───────┴───────┴─────────────────┘
+┌─────────┐
+│  file   │
+│ varchar │
+├─────────┤
+│ trips   │
+└─────────┘
+┌───────────────────────┬─────────────┬─────────────────────────────────────────────┬───────────────────────────────────────────────────────────────────┬───────────────┬───────┬───────┬───────┬───────┬───────┬────────┬─────────────────┐
+│      column_name      │ column_type │                     min                     │                                max                                │ approx_unique │  avg  │  std  │  q25  │  q50  │  q75  │ count  │ null_percentage │
+│        varchar        │   varchar   │                   varchar                   │                              varchar                              │     int64     │ int32 │ int32 │ int32 │ int32 │ int32 │ int64  │  decimal(9,2)   │
+├───────────────────────┼─────────────┼─────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────┼───────────────┼───────┼───────┼───────┼───────┼───────┼────────┼─────────────────┤
+│ trip_id               │ VARCHAR     │ 100000080                                   │ 99999080                                                          │        134867 │  NULL │  NULL │  NULL │  NULL │  NULL │ 137910 │            0.00 │
+│ route_id              │ VARCHAR     │ 1                                           │ 996                                                               │           229 │  NULL │  NULL │  NULL │  NULL │  NULL │ 137910 │            0.00 │
+│ service_id            │ VARCHAR     │ 1                                           │ 7001                                                              │             9 │  NULL │  NULL │  NULL │  NULL │  NULL │ 137910 │            0.00 │
+│ trip_headsign         │ VARCHAR     │ Bloor-Danforth Line towards Kennedy Station │ Yonge-University Line towards Vaughan Metropolitan Centre Station │           921 │  NULL │  NULL │  NULL │  NULL │  NULL │ 137910 │            0.00 │
+│ trip_short_name       │ VARCHAR     │ A                                           │ S                                                                 │            11 │  NULL │  NULL │  NULL │  NULL │  NULL │ 137910 │           69.44 │
+│ direction_id          │ VARCHAR     │ 0                                           │ 1                                                                 │             2 │  NULL │  NULL │  NULL │  NULL │  NULL │ 137910 │            0.00 │
+│ block_id              │ VARCHAR     │ 1000110                                     │ 99629292                                                          │          4415 │  NULL │  NULL │  NULL │  NULL │  NULL │ 137910 │            0.00 │
+│ shape_id              │ VARCHAR     │ 1122721                                     │ shp-996-53                                                        │          1319 │  NULL │  NULL │  NULL │  NULL │  NULL │ 137910 │            0.00 │
+│ wheelchair_accessible │ VARCHAR     │ 1                                           │ 2                                                                 │             2 │  NULL │  NULL │  NULL │  NULL │  NULL │ 137910 │            0.00 │
+└───────────────────────┴─────────────┴─────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────┴───────────────┴───────┴───────┴───────┴───────┴───────┴────────┴─────────────────┘
+┌────────────┐
+│    file    │
+│  varchar   │
+├────────────┤
+│ stop_times │
+└────────────┘
+┌─────────────────────┬─────────────┬────────────────────────────┬──────────────────────────────────────────────────┬───────────────┬───────┬───────┬───────┬───────┬───────┬─────────┬─────────────────┐
+│     column_name     │ column_type │            min             │                       max                        │ approx_unique │  avg  │  std  │  q25  │  q50  │  q75  │  count  │ null_percentage │
+│       varchar       │   varchar   │          varchar           │                     varchar                      │     int64     │ int32 │ int32 │ int32 │ int32 │ int32 │  int64  │  decimal(9,2)   │
+├─────────────────────┼─────────────┼────────────────────────────┼──────────────────────────────────────────────────┼───────────────┼───────┼───────┼───────┼───────┼───────┼─────────┼─────────────────┤
+│ trip_id             │ VARCHAR     │ 100000080                  │ 99999080                                         │        134867 │  NULL │  NULL │  NULL │  NULL │  NULL │ 4344069 │            0.00 │
+│ arrival_time        │ VARCHAR     │ 03:28:00                   │ 30:52:41                                         │         91900 │  NULL │  NULL │  NULL │  NULL │  NULL │ 4344069 │            0.00 │
+│ departure_time      │ VARCHAR     │ 03:28:00                   │ 30:52:41                                         │         91900 │  NULL │  NULL │  NULL │  NULL │  NULL │ 4344069 │            0.00 │
+│ stop_id             │ VARCHAR     │ 1                          │ 9999                                             │          8170 │  NULL │  NULL │  NULL │  NULL │  NULL │ 4344069 │            0.00 │
+│ stop_sequence       │ VARCHAR     │ 1                          │ 99                                               │           123 │  NULL │  NULL │  NULL │  NULL │  NULL │ 4344069 │            0.00 │
+│ stop_headsign       │ VARCHAR     │ 10 VAN HORNE DON MILLS STN │ 996S WILSON EXPRESS SHORT TURN TO WILSON STATION │           697 │  NULL │  NULL │  NULL │  NULL │  NULL │ 4344069 │            4.93 │
+│ pickup_type         │ VARCHAR     │ 0                          │ 1                                                │             2 │  NULL │  NULL │  NULL │  NULL │  NULL │ 4344069 │            0.00 │
+│ drop_off_type       │ VARCHAR     │ 0                          │ 1                                                │             2 │  NULL │  NULL │  NULL │  NULL │  NULL │ 4344069 │            0.00 │
+│ shape_dist_traveled │ VARCHAR     │ 0                          │ 9999.43                                          │         31635 │  NULL │  NULL │  NULL │  NULL │  NULL │ 4344069 │            0.20 │
+│ timepoint           │ VARCHAR     │ 0                          │ 1                                                │             2 │  NULL │  NULL │  NULL │  NULL │  NULL │ 4344069 │            4.93 │
+└─────────────────────┴─────────────┴────────────────────────────┴──────────────────────────────────────────────────┴───────────────┴───────┴───────┴───────┴───────┴───────┴─────────┴─────────────────┘
+  10 rows                                                                                                                                                                                    12 columns
+┌─────────┐
+│  file   │
+│ varchar │
+├─────────┤
+│ shapes  │
+└─────────┘
+┌─────────────────────┬─────────────┬────────────┬────────────┬───────────────┬───────┬───────┬───────┬───────┬───────┬─────────┬─────────────────┐
+│     column_name     │ column_type │    min     │    max     │ approx_unique │  avg  │  std  │  q25  │  q50  │  q75  │  count  │ null_percentage │
+│       varchar       │   varchar   │  varchar   │  varchar   │     int64     │ int32 │ int32 │ int32 │ int32 │ int32 │  int64  │  decimal(9,2)   │
+├─────────────────────┼─────────────┼────────────┼────────────┼───────────────┼───────┼───────┼───────┼───────┼───────┼─────────┼─────────────────┤
+│ shape_id            │ VARCHAR     │ 1122721    │ shp-996-53 │          1357 │  NULL │  NULL │  NULL │  NULL │  NULL │ 1033606 │            0.00 │
+│ shape_pt_lat        │ VARCHAR     │ 43.591789  │ 43.90975   │        151748 │  NULL │  NULL │  NULL │  NULL │  NULL │ 1033606 │            0.00 │
+│ shape_pt_lon        │ VARCHAR     │ -79.122627 │ -79.650423 │        185386 │  NULL │  NULL │  NULL │  NULL │  NULL │ 1033606 │            0.00 │
+│ shape_pt_sequence   │ VARCHAR     │ 1          │ 999        │          3697 │  NULL │  NULL │  NULL │  NULL │  NULL │ 1033606 │            0.00 │
+│ shape_dist_traveled │ VARCHAR     │ 0          │ 9999.98    │        723448 │  NULL │  NULL │  NULL │  NULL │  NULL │ 1033606 │            0.00 │
+└─────────────────────┴─────────────┴────────────┴────────────┴───────────────┴───────┴───────┴───────┴───────┴───────┴─────────┴─────────────────┘
+┌───────────────────┐
+│      section      │
+│      varchar      │
+├───────────────────┤
+│ === 4. ROUTES === │
+└───────────────────┘
+┌────────────┬────────┐
+│ route_type │ routes │
+│  varchar   │ int64  │
+├────────────┼────────┤
+│ 0          │     19 │
+│ 1          │      3 │
+│ 3          │    213 │
+└────────────┴────────┘
+┌──────────┬───────────┬──────────────────┬─────────────────┬────────────┬────────────┬───────────┬─────────────┬──────────────────┐
+│ route_id │ agency_id │ route_short_name │ route_long_name │ route_desc │ route_type │ route_url │ route_color │ route_text_color │
+│ varchar  │  varchar  │     varchar      │     varchar     │  varchar   │  varchar   │  varchar  │   varchar   │     varchar      │
+├──────────┼───────────┼──────────────────┼─────────────────┼────────────┼────────────┼───────────┼─────────────┼──────────────────┤
+│ 301      │ 1         │ 301              │ Queen           │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 304      │ 1         │ 304              │ King            │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 305      │ 1         │ 305              │ Dundas          │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 306      │ 1         │ 306              │ Carlton         │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 310      │ 1         │ 310              │ Spadina         │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 312      │ 1         │ 312              │ St Clair        │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 5        │ 1         │ 5                │ Eglinton Line   │ NULL       │ 0          │ NULL      │ FF8000      │ FFFFFF           │
+│ 501      │ 1         │ 501              │ Queen           │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 503      │ 1         │ 503              │ Kingston Rd     │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 504      │ 1         │ 504              │ King            │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 505      │ 1         │ 505              │ Dundas          │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 506      │ 1         │ 506              │ Carlton         │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 507      │ 1         │ 507              │ Long Branch     │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 508      │ 1         │ 508              │ Lake Shore      │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 509      │ 1         │ 509              │ Harbourfront    │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+└──────────┴───────────┴──────────────────┴─────────────────┴────────────┴────────────┴───────────┴─────────────┴──────────────────┘
+  15 rows                                                                                                                9 columns
+┌──────────┬───────────┬──────────────────┬───────────────────────┬────────────┬────────────┬───────────┬─────────────┬──────────────────┐
+│ route_id │ agency_id │ route_short_name │    route_long_name    │ route_desc │ route_type │ route_url │ route_color │ route_text_color │
+│ varchar  │  varchar  │     varchar      │        varchar        │  varchar   │  varchar   │  varchar  │   varchar   │     varchar      │
+├──────────┼───────────┼──────────────────┼───────────────────────┼────────────┼────────────┼───────────┼─────────────┼──────────────────┤
+│ 301      │ 1         │ 301              │ Queen                 │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 304      │ 1         │ 304              │ King                  │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 305      │ 1         │ 305              │ Dundas                │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 306      │ 1         │ 306              │ Carlton               │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 310      │ 1         │ 310              │ Spadina               │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 312      │ 1         │ 312              │ St Clair              │ NULL       │ 0          │ NULL      │ 0054A6      │ FFFFFF           │
+│ 5        │ 1         │ 5                │ Eglinton Line         │ NULL       │ 0          │ NULL      │ FF8000      │ FFFFFF           │
+│ 501      │ 1         │ 501              │ Queen                 │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 503      │ 1         │ 503              │ Kingston Rd           │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 504      │ 1         │ 504              │ King                  │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 505      │ 1         │ 505              │ Dundas                │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 506      │ 1         │ 506              │ Carlton               │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 507      │ 1         │ 507              │ Long Branch           │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 508      │ 1         │ 508              │ Lake Shore            │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 509      │ 1         │ 509              │ Harbourfront          │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 510      │ 1         │ 510              │ Spadina               │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 511      │ 1         │ 511              │ Bathurst              │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 512      │ 1         │ 512              │ St Clair              │ NULL       │ 0          │ NULL      │ ED1C24      │ FFFFFF           │
+│ 6        │ 1         │ 6                │ Finch West Line       │ NULL       │ 0          │ NULL      │ 808080      │ FFFFFF           │
+│ 1        │ 1         │ 1                │ Yonge-University Line │ NULL       │ 1          │ NULL      │ D5C82B      │ 000000           │
+│ 2        │ 1         │ 2                │ Bloor-Danforth Line   │ NULL       │ 1          │ NULL      │ 008000      │ FFFFFF           │
+│ 4        │ 1         │ 4                │ Sheppard Line         │ NULL       │ 1          │ NULL      │ B300B3      │ FFFFFF           │
+└──────────┴───────────┴──────────────────┴───────────────────────┴────────────┴────────────┴───────────┴─────────────┴──────────────────┘
+  22 rows                                                                                                                      9 columns
+┌──────────────────┐
+│     section      │
+│     varchar      │
+├──────────────────┤
+│ === 5. STOPS === │
+└──────────────────┘
+┌───────────────┬───────┐
+│ location_type │   n   │
+│    varchar    │ int64 │
+├───────────────┼───────┤
+│ 0             │  9511 │
+│ 1             │   114 │
+│ 2             │   250 │
+│ 3             │  2126 │
+└───────────────┴───────┘
+┌─────────────────────┬───────┐
+│ wheelchair_boarding │   n   │
+│       varchar       │ int64 │
+├─────────────────────┼───────┤
+│ 0                   │   626 │
+│ 1                   │  8474 │
+│ 2                   │  2901 │
+└─────────────────────┴───────┘
+┌─────────────┬──────────────┬─────────┬───────────┬──────────┬────────────┬────────────┐
+│ with_parent │ no_stop_code │ with_tz │  min_lat  │ max_lat  │  min_lon   │  max_lon   │
+│    int64    │    int64     │  int64  │  double   │  double  │   double   │   double   │
+├─────────────┼──────────────┼─────────┼───────────┼──────────┼────────────┼────────────┤
+│        2929 │            0 │       0 │ 43.592111 │ 43.90975 │ -79.649908 │ -79.123111 │
+└─────────────┴──────────────┴─────────┴───────────┴──────────┴────────────┴────────────┘
+┌───────────┬───────┐
+│ stop_code │  dup  │
+│  varchar  │ int64 │
+└───────────┴───────┘
+       0 rows      
+┌─────────┬───────────┬──────────────────────────────────────────┬───────────┬───────────┬────────────┬─────────┬──────────┬───────────────┬────────────────┬───────────────┬─────────────────────┬──────────┬───────────────┐
+│ stop_id │ stop_code │                stop_name                 │ stop_desc │ stop_lat  │  stop_lon  │ zone_id │ stop_url │ location_type │ parent_station │ stop_timezone │ wheelchair_boarding │ level_id │ tts_stop_name │
+│ varchar │  varchar  │                 varchar                  │  varchar  │  varchar  │  varchar   │ varchar │ varchar  │    varchar    │    varchar     │    varchar    │       varchar       │ varchar  │    varchar    │
+├─────────┼───────────┼──────────────────────────────────────────┼───────────┼───────────┼────────────┼─────────┼──────────┼───────────────┼────────────────┼───────────────┼─────────────────────┼──────────┼───────────────┤
+│ 1       │ 1         │ Alness St at Dolomite Dr                 │ NULL      │ 43.77939  │ -79.475411 │ NULL    │ NULL     │ 0             │ NULL           │ NULL          │ 1                   │ NULL     │ NULL          │
+│ 2       │ 2         │ Alness St at Dolomite Dr                 │ NULL      │ 43.779605 │ -79.475709 │ NULL    │ NULL     │ 0             │ NULL           │ NULL          │ 2                   │ NULL     │ NULL          │
+│ 3       │ 3         │ Alness St at Flint Rd                    │ NULL      │ 43.781744 │ -79.477584 │ NULL    │ NULL     │ 0             │ NULL           │ NULL          │ 1                   │ NULL     │ NULL          │
+│ 7       │ 7         │ Alness St at Steeles Ave West South Side │ NULL      │ 43.784228 │ -79.480914 │ NULL    │ NULL     │ 0             │ NULL           │ NULL          │ 2                   │ NULL     │ NULL          │
+│ 8       │ 8         │ Atkinson Ave at Rodeo Dr                 │ NULL      │ 43.808738 │ -79.442506 │ NULL    │ NULL     │ 0             │ NULL           │ NULL          │ 2                   │ NULL     │ NULL          │
+└─────────┴───────────┴──────────────────────────────────────────┴───────────┴───────────┴────────────┴─────────┴──────────┴───────────────┴────────────────┴───────────────┴─────────────────────┴──────────┴───────────────┘
+┌─────────┬───────────┬────────────────┬────────────────────────────────────────┬───────────┬────────────┬─────────┬──────────┬───────────────┬────────────────┬───────────────┬─────────────────────┬──────────┬───────────────┐
+│ stop_id │ stop_code │   stop_name    │               stop_desc                │ stop_lat  │  stop_lon  │ zone_id │ stop_url │ location_type │ parent_station │ stop_timezone │ wheelchair_boarding │ level_id │ tts_stop_name │
+│ varchar │  varchar  │    varchar     │                varchar                 │  varchar  │  varchar   │ varchar │ varchar  │    varchar    │    varchar     │    varchar    │       varchar       │ varchar  │    varchar    │
+├─────────┼───────────┼────────────────┼────────────────────────────────────────┼───────────┼────────────┼─────────┼──────────┼───────────────┼────────────────┼───────────────┼─────────────────────┼──────────┼───────────────┤
+│ 3194    │ 3194      │ Woodbine       │ Parent station node for Woodbine       │ 43.686546 │ -79.312683 │ NULL    │ NULL     │ 1             │ NULL           │ NULL          │ 1                   │ NULL     │ NULL          │
+│ 3529    │ 3529      │ Dundas West    │ Parent station node for Dundas West    │ 43.656849 │ -79.453392 │ NULL    │ NULL     │ 1             │ NULL           │ NULL          │ 1                   │ NULL     │ NULL          │
+│ 3667    │ 3667      │ Greenwood      │ Parent station node for Greenwood      │ 43.682648 │ -79.330284 │ NULL    │ NULL     │ 1             │ NULL           │ NULL          │ 1                   │ NULL     │ NULL          │
+│ 7129    │ 7129      │ Sheppard-Yonge │ Parent station node for Sheppard-Yonge │ 43.761646 │ -79.41169  │ NULL    │ NULL     │ 1             │ NULL           │ NULL          │ 1                   │ NULL     │ NULL          │
+│ 7906    │ 7906      │ Kipling        │ Parent station node for Kipling        │ 43.63715  │ -79.535995 │ NULL    │ NULL     │ 1             │ NULL           │ NULL          │ 1                   │ NULL     │ NULL          │
+└─────────┴───────────┴────────────────┴────────────────────────────────────────┴───────────┴────────────┴─────────┴──────────┴───────────────┴────────────────┴───────────────┴─────────────────────┴──────────┴───────────────┘
+┌─────────┬───────────┬───────────────┬───────────┬───────────┬────────────┬─────────┬──────────┬───────────────┬────────────────┬───────────────┬─────────────────────┬──────────┬───────────────┐
+│ stop_id │ stop_code │   stop_name   │ stop_desc │ stop_lat  │  stop_lon  │ zone_id │ stop_url │ location_type │ parent_station │ stop_timezone │ wheelchair_boarding │ level_id │ tts_stop_name │
+│ varchar │  varchar  │    varchar    │  varchar  │  varchar  │  varchar   │ varchar │ varchar  │    varchar    │    varchar     │    varchar    │       varchar       │ varchar  │    varchar    │
+├─────────┼───────────┼───────────────┼───────────┼───────────┼────────────┼─────────┼──────────┼───────────────┼────────────────┼───────────────┼─────────────────────┼──────────┼───────────────┤
+│ 100254  │ 100254    │ Main Entrance │ NULL      │ 43.687603 │ -79.488602 │ NULL    │ NULL     │ 2             │ 16761          │ NULL          │ 1                   │ 300248   │ NULL          │
+│ 100263  │ 100263    │ Entrance/Exit │ NULL      │ 43.68819  │ -79.487129 │ NULL    │ NULL     │ 2             │ 16761          │ NULL          │ 1                   │ 300248   │ NULL          │
+│ 100264  │ 100264    │ Entrance/Exit │ NULL      │ 43.688339 │ -79.486977 │ NULL    │ NULL     │ 2             │ 16761          │ NULL          │ 1                   │ 300248   │ NULL          │
+└─────────┴───────────┴───────────────┴───────────┴───────────┴────────────┴─────────┴──────────┴───────────────┴────────────────┴───────────────┴─────────────────────┴──────────┴───────────────┘
+┌──────────────────┐
+│     section      │
+│     varchar      │
+├──────────────────┤
+│ === 6. TRIPS === │
+└──────────────────┘
+┌──────────────┬───────┐
+│ direction_id │   n   │
+│   varchar    │ int64 │
+├──────────────┼───────┤
+│ 0            │ 69344 │
+│ 1            │ 68566 │
+└──────────────┴───────┘
+┌───────────────────────┬────────┐
+│ wheelchair_accessible │   n    │
+│        varchar        │ int64  │
+├───────────────────────┼────────┤
+│ 1                     │ 120655 │
+│ 2                     │  17255 │
+└───────────────────────┴────────┘
+┌─────────────┬──────────┬──────────┬────────┬─────────────┬───────────┐
+│ no_headsign │ no_block │ no_shape │ blocks │ shapes_used │ headsigns │
+│    int64    │  int64   │  int64   │ int64  │    int64    │   int64   │
+├─────────────┼──────────┼──────────┼────────┼─────────────┼───────────┤
+│           0 │        0 │        0 │   4190 │        1564 │       803 │
+└─────────────┴──────────┴──────────┴────────┴─────────────┴───────────┘
+┌────────────┬────────┐
+│ route_type │ trips  │
+│  varchar   │ int64  │
+├────────────┼────────┤
+│ 0          │  19703 │
+│ 1          │   6243 │
+│ 3          │ 111964 │
+└────────────┴────────┘
+┌───────────┬──────────┬────────────┬───────────────────────────────────────────┬─────────────────┬──────────────┬──────────┬───────────┬───────────────────────┐
+│  trip_id  │ route_id │ service_id │               trip_headsign               │ trip_short_name │ direction_id │ block_id │ shape_id  │ wheelchair_accessible │
+│  varchar  │ varchar  │  varchar   │                  varchar                  │     varchar     │   varchar    │ varchar  │  varchar  │        varchar        │
+├───────────┼──────────┼────────────┼───────────────────────────────────────────┼─────────────────┼──────────────┼──────────┼───────────┼───────────────────────┤
+│ 125389020 │ 10       │ 1          │ East - 10 Van Horne towards Victoria Park │ NULL            │ 0            │ 100112   │ shp-10-03 │ 1                     │
+│ 117101020 │ 10       │ 1          │ East - 10 Van Horne towards Victoria Park │ NULL            │ 0            │ 100112   │ shp-10-03 │ 1                     │
+│ 12581020  │ 10       │ 1          │ East - 10 Van Horne towards Victoria Park │ NULL            │ 0            │ 100111   │ shp-10-04 │ 1                     │
+│ 118795020 │ 10       │ 1          │ East - 10 Van Horne towards Victoria Park │ NULL            │ 0            │ 100112   │ shp-10-03 │ 1                     │
+│ 16945020  │ 10       │ 1          │ East - 10 Van Horne towards Victoria Park │ NULL            │ 0            │ 100112   │ shp-10-03 │ 1                     │
+└───────────┴──────────┴────────────┴───────────────────────────────────────────┴─────────────────┴──────────────┴──────────┴───────────┴───────────────────────┘
+┌───────────────────────┐
+│        section        │
+│        varchar        │
+├───────────────────────┤
+│ === 7. STOP_TIMES === │
+└───────────────────────┘
+┌───────────┬──────────────┬────────────────┬─────────┬───────────────┬───────────────────────────────────────────┬─────────────┬───────────────┬─────────────────────┬───────────┐
+│  trip_id  │ arrival_time │ departure_time │ stop_id │ stop_sequence │               stop_headsign               │ pickup_type │ drop_off_type │ shape_dist_traveled │ timepoint │
+│  varchar  │   varchar    │    varchar     │ varchar │    varchar    │                  varchar                  │   varchar   │    varchar    │       varchar       │  varchar  │
+├───────────┼──────────────┼────────────────┼─────────┼───────────────┼───────────────────────────────────────────┼─────────────┼───────────────┼─────────────────────┼───────────┤
+│ 100000080 │ 06:59:00     │ 06:59:00       │ 14727   │ 1             │ 162 LAWRENCE-DONWAY TO DON VALLEY STATION │ 0           │ 0             │ 0                   │ 1         │
+│ 100000080 │ 06:59:54     │ 06:59:54       │ 1235    │ 2             │ 162 LAWRENCE-DONWAY TO DON VALLEY STATION │ 0           │ 0             │ 69.04               │ 0         │
+│ 100000080 │ 07:00:28     │ 07:00:28       │ 1233    │ 3             │ 162 LAWRENCE-DONWAY TO DON VALLEY STATION │ 0           │ 0             │ 308.48              │ 0         │
+│ 100000080 │ 07:00:47     │ 07:00:47       │ 2819    │ 4             │ 162 LAWRENCE-DONWAY TO DON VALLEY STATION │ 0           │ 0             │ 444.19              │ 0         │
+│ 100000080 │ 07:01:10     │ 07:01:10       │ 1222    │ 5             │ 162 LAWRENCE-DONWAY TO DON VALLEY STATION │ 0           │ 0             │ 604.83              │ 0         │
+│ 100000080 │ 07:01:28     │ 07:01:28       │ 1227    │ 6             │ 162 LAWRENCE-DONWAY TO DON VALLEY STATION │ 0           │ 0             │ 732.51              │ 0         │
+│ 100000080 │ 07:01:51     │ 07:01:51       │ 1231    │ 7             │ 162 LAWRENCE-DONWAY TO DON VALLEY STATION │ 0           │ 0             │ 892.8               │ 0         │
+│ 100000080 │ 07:02:20     │ 07:02:20       │ 1230    │ 8             │ 162 LAWRENCE-DONWAY TO DON VALLEY STATION │ 0           │ 0             │ 1098.43             │ 0         │
+└───────────┴──────────────┴────────────────┴─────────┴───────────────┴───────────────────────────────────────────┴─────────────┴───────────────┴─────────────────────┴───────────┘
+┌───────────┬─────────┐
+│ timepoint │    n    │
+│  varchar  │  int64  │
+├───────────┼─────────┤
+│ 0         │ 3839111 │
+│ 1         │  290811 │
+│ NULL      │  214147 │
+└───────────┴─────────┘
+┌─────────────┬───────────────┬─────────┐
+│ pickup_type │ drop_off_type │    n    │
+│   varchar   │    varchar    │  int64  │
+├─────────────┼───────────────┼─────────┤
+│ 0           │ 0             │ 4324742 │
+│ 0           │ 1             │    4372 │
+│ 1           │ 0             │   14103 │
+│ 1           │ 1             │     852 │
+└─────────────┴───────────────┴─────────┘
+┌───────────────┬─────────────────┬─────────┬────────────────────┬────────────────┬──────────┐
+│ blank_arrival │ blank_departure │ no_dist │ with_stop_headsign │ after_midnight │ max_secs │
+│     int64     │      int64      │  int64  │       int64        │     int64      │  int32   │
+├───────────────┼─────────────────┼─────────┼────────────────────┼────────────────┼──────────┤
+│             0 │               0 │    8660 │            4129922 │         462144 │   111161 │
+└───────────────┴─────────────────┴─────────┴────────────────────┴────────────────┴──────────┘
+┌─────────────────────────┐
+│ arrival_after_departure │
+│          int64          │
+├─────────────────────────┤
+│                       0 │
+└─────────────────────────┘
+┌─────────────────────┐
+│ time_goes_backwards │
+│        int64        │
+├─────────────────────┤
+│                   0 │
+└─────────────────────┘
+┌──────────────────────────┐
+│ trips_with_under_2_stops │
+│          int64           │
+├──────────────────────────┤
+│                        0 │
+└──────────────────────────┘
+┌────────────────────┐
+│ duplicate_trip_seq │
+│       int64        │
+├────────────────────┤
+│                  0 │
+└────────────────────┘
+┌───────────┬───────────┬───────────┐
+│ min_stops │ avg_stops │ max_stops │
+│   int64   │  double   │   int64   │
+├───────────┼───────────┼───────────┤
+│         2 │      31.5 │       132 │
+└───────────┴───────────┴───────────┘
+┌───────────────────┐
+│      section      │
+│      varchar      │
+├───────────────────┤
+│ === 8. SHAPES === │
+└───────────────────┘
+┌────────┬─────────┬─────────┐
+│ shapes │ points  │ no_dist │
+│ int64  │  int64  │  int64  │
+├────────┼─────────┼─────────┤
+│   1590 │ 1033606 │       0 │
+└────────┴─────────┴─────────┘
+┌──────────┬──────────────┬──────────────┬───────────────────┬─────────────────────┐
+│ shape_id │ shape_pt_lat │ shape_pt_lon │ shape_pt_sequence │ shape_dist_traveled │
+│ varchar  │   varchar    │   varchar    │      varchar      │       varchar       │
+├──────────┼──────────────┼──────────────┼───────────────────┼─────────────────────┤
+│ 1122721  │ 43.723855    │ -79.48674    │ 1                 │ 0                   │
+│ 1122721  │ 43.723276    │ -79.489327   │ 2                 │ 0.217               │
+│ 1122721  │ 43.723266    │ -79.489379   │ 3                 │ 0.2211              │
+│ 1122721  │ 43.723265    │ -79.489425   │ 4                 │ 0.2251              │
+│ 1122721  │ 43.723272    │ -79.489477   │ 5                 │ 0.2292              │
+└──────────┴──────────────┴──────────────┴───────────────────┴─────────────────────┘
+┌────────────────────────────────────────────────────┐
+│                      section                       │
+│                      varchar                       │
+├────────────────────────────────────────────────────┤
+│ === 9. REFERENTIAL INTEGRITY (all should be 0) === │
+└────────────────────────────────────────────────────┘
+┌─────────────────────┐
+│ trips_without_route │
+│        int64        │
+├─────────────────────┤
+│                   0 │
+└─────────────────────┘
+┌───────────────────────┐
+│ trips_without_service │
+│         int64         │
+├───────────────────────┤
+│                     0 │
+└───────────────────────┘
+┌─────────────────────┐
+│ trips_without_shape │
+│        int64        │
+├─────────────────────┤
+│                   0 │
+└─────────────────────┘
+┌────────────────────┐
+│ times_without_trip │
+│       int64        │
+├────────────────────┤
+│                  0 │
+└────────────────────┘
+┌────────────────────┐
+│ times_without_stop │
+│       int64        │
+├────────────────────┤
+│                  0 │
+└────────────────────┘
+┌──────────────────────────┐
+│ trips_without_stop_times │
+│          int64           │
+├──────────────────────────┤
+│                        0 │
+└──────────────────────────┘
+┌────────────────────┐
+│ stops_never_served │
+│       int64        │
+├────────────────────┤
+│                103 │
+└────────────────────┘
+┌───────────────┐
+│ orphan_parent │
+│     int64     │
+├───────────────┤
+│             0 │
+└───────────────┘
+┌───────────────────────────────┐
+│            section            │
+│            varchar            │
+├───────────────────────────────┤
+│ === 10. PATTERNS + BLOCKS === │
+└───────────────────────────────┘
+┌───────────────────┐
+│ distinct_patterns │
+│       int64       │
+├───────────────────┤
+│              1416 │
+└───────────────────┘
+┌─────────────────────┬─────────────────────┐
+│ avg_trips_per_block │ max_trips_per_block │
+│       double        │        int64        │
+├─────────────────────┼─────────────────────┤
+│                32.9 │                 332 │
+└─────────────────────┴─────────────────────┘
+┌─────────────────────────────────────────┐
+│                 section                 │
+│                 varchar                 │
+├─────────────────────────────────────────┤
+│ === 11. STATION DATA (skip for MVP) === │
+└─────────────────────────────────────────┘
+┌────────────┬──────────────┬────────────┬──────────────┬──────────────────┬─────────┬────────────────┬─────────────┬───────────┬───────────┬───────────────┬────────────────────────┐
+│ pathway_id │ from_stop_id │ to_stop_id │ pathway_mode │ is_bidirectional │ length  │ traversal_time │ stair_count │ max_slope │ min_width │ signposted_as │ reversed_signposted_as │
+│  varchar   │   varchar    │  varchar   │   varchar    │     varchar      │ varchar │    varchar     │   varchar   │  varchar  │  varchar  │    varchar    │        varchar         │
+├────────────┼──────────────┼────────────┼──────────────┼──────────────────┼─────────┼────────────────┼─────────────┼───────────┼───────────┼───────────────┼────────────────────────┤
+│ 200842     │ 100914       │ 100915     │ 2            │ 1                │ NULL    │ 10             │ NULL        │ NULL      │ NULL      │ NULL          │ NULL                   │
+│ 200844     │ 100919       │ 100920     │ 2            │ 1                │ NULL    │ 10             │ NULL        │ NULL      │ NULL      │ NULL          │ NULL                   │
+│ 200848     │ 100927       │ 100928     │ 2            │ 1                │ NULL    │ 10             │ NULL        │ NULL      │ NULL      │ NULL          │ NULL                   │
+└────────────┴──────────────┴────────────┴──────────────┴──────────────────┴─────────┴────────────────┴─────────────┴───────────┴───────────┴───────────────┴────────────────────────┘
+┌──────────┬─────────────┬─────────────────┐
+│ level_id │ level_index │   level_name    │
+│ varchar  │   varchar   │     varchar     │
+├──────────┼─────────────┼─────────────────┤
+│ 300175   │ -2          │ Platform Level  │
+│ 300176   │ -1          │ Concourse Level │
+│ 300174   │ 0           │ Street Level    │
+└──────────┴─────────────┴─────────────────┘

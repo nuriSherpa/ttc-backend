@@ -1,0 +1,160 @@
+# Database service: Postgres (system of record) + Redis (realtime cache),
+# plus the maintenance and GTFS-load jobs that belong to the database.
+# Paths are relative to THIS file. Variables come from the root .env.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: ttc-postgres
+    restart: unless-stopped
+    command: ['postgres', '-c', 'config_file=/etc/postgresql/postgresql.conf']
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ttc_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ttc}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
+      RT_DB_PASSWORD: ${RT_DB_PASSWORD:?set RT_DB_PASSWORD in .env}
+      TZ: America/Toronto
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432' # localhost only
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    shm_size: 1gb
+    stop_grace_period: 1m
+    healthcheck:
+      # -h 127.0.0.1: during first-time init Postgres listens on a unix socket
+      # only, so a socket check would report "healthy" too early.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: ttc-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - /usr/local/etc/redis/redis.conf
+      - --requirepass
+      - ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD} # lets redis-cli (and the healthcheck) authenticate
+    ports:
+      - '127.0.0.1:${REDIS_PORT:-6379}:6379' # localhost only
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Keeps the data current. One process, two jobs:
+  #   every UPDATE_CHECK_HOURS  look for a new TTC GTFS feed on Toronto Open Data;
+  #                             download, sanity-check, load and activate it when due
+  #   every MAINTAIN_HOURS      ops.maintain(): partitions, realtime sweep,
+  #                             departures roll-forward, feed-expiry warning
+  # Status: `make status`.  Logs: `docker compose logs -f maintainer`.
+
+  maintainer:
+    build: ./maintainer
+    container_name: ttc-maintainer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-ttc_admin}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-ttc}
+      DATABASE_URL: dbname=${POSTGRES_DB:-ttc}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      TZ: America/Toronto
+      UPDATE_CHECK_HOURS: ${UPDATE_CHECK_HOURS:-1}
+      MAINTAIN_HOURS: ${MAINTAIN_HOURS:-6}
+      ACTIVATE_DAYS_BEFORE_START: ${ACTIVATE_DAYS_BEFORE_START:-0}
+    volumes:
+      - ./tools:/tools:ro
+      - maintainer_state:/state
+    healthcheck:
+      test: ['CMD', 'node', '/app/healthcheck.js']
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 1m
+
+  # One-shot GTFS loader, run on demand:
+  #   docker compose run --rm loader /data <feed_version>
+  loader:
+    image: postgres:16
+    profiles: ['tools']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-ttc_admin}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: dbname=${POSTGRES_DB:-ttc}
+    volumes:
+      - ../../Data:/data:ro
+      - ./tools:/tools:ro
+    entrypoint: ['bash', '/tools/load_gtfs.sh']
+    command: ['/data']
+
+  # One-shot database tasks. Run on demand:
+  #   docker compose run --rm dbtool apply-schema user
+  #   docker compose run --rm dbtool apply-schema all
+  #   docker compose run --rm dbtool reset --confirm
+  dbtool:
+    image: postgres:16
+    profiles: ['tools']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-ttc_admin}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-ttc}
+    volumes:
+      - ./postgres/init:/schema:ro
+      - ./tools:/tools:ro
+    entrypoint: ['bash', '/tools/dbtool.sh']
+    command: ['help']
+
+  # One-shot schema setup. Runs on every `docker compose up`.
+  # Applies user/, trip/, journey/ in order. Idempotent: tracks which
+  # files have been applied in bootstrap.applied_file; subsequent runs
+  # detect existing schemas and exit in under a second.
+  # Never drops anything.
+  bootstrap:
+    image: postgres:16
+    container_name: ttc-bootstrap
+    restart: 'no'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-ttc_admin}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-ttc}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
+      RT_DB_PASSWORD: ${RT_DB_PASSWORD:?set RT_DB_PASSWORD in .env}
+      TARGET: ${TARGET:-}
+    volumes:
+      - ./postgres/init:/schema:ro
+      - ./tools:/tools:ro
+    entrypoint: ['bash', '/tools/bootstrap.sh']
+
+volumes:
+  pgdata:
+  maintainer_state:

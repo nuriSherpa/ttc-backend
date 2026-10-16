@@ -1,0 +1,21 @@
+services:
+  weather:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ttc-weather:latest
+    container_name: ttc-weather
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-ttc_admin}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-ttc}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TZ: America/Toronto
