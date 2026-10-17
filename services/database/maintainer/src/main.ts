@@ -8,6 +8,7 @@ import { getRedis, closeRedis } from './redis.js';
 import { ensureStaticExport } from './export/index.js';
 import { runUpdateCheck } from './tasks/update-check.js';
 import { runMaintainTask } from './tasks/maintain.js';
+import { runNightly } from './tasks/nightly.js';
 
 async function safe(label: string, fn: () => Promise<void>, log: ReturnType<typeof makeLogger>) {
   try {
@@ -25,12 +26,36 @@ async function heartbeat(cfg: ReturnType<typeof loadConfig>) {
   }
 }
 
+/**
+ * Milliseconds until the next 03:00 in America/Toronto.
+ * Handles DST correctly because Intl.DateTimeFormat knows the current offset.
+ */
+function msUntilNext3amToronto(): number {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Toronto',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(now).map((p) => [p.type, p.value]));
+  const hour = Number(parts.hour);
+  const minute = Number(parts.minute);
+  const second = Number(parts.second);
+
+  const msNow = (hour * 3600 + minute * 60 + second) * 1000;
+  const msTarget = 3 * 3600 * 1000; // 03:00:00
+
+  if (msNow < msTarget) return msTarget - msNow;
+  return 24 * 3600 * 1000 - msNow + msTarget;
+}
+
 async function main() {
   const cfg = loadConfig();
   const log = makeLogger(cfg.LOG_LEVEL);
 
-  // Manual export mode: run once, exit. Used for the first-ever export
-  // and for debugging without waiting for an update-check tick.
+  // Manual export mode: run once, exit.
   if (process.argv.includes('--export-static')) {
     const pg = makePool(cfg);
     const redis = getRedis(cfg);
@@ -46,6 +71,23 @@ async function main() {
       process.exit(1);
     }
   }
+
+  // Manual nightly mode: run once, exit. Useful for testing.
+  if (process.argv.includes('--nightly')) {
+    const pg = makePool(cfg);
+    const state = new StateStore(cfg.STATE_DIR);
+    await state.load();
+    try {
+      await waitForPg(pg);
+      await runNightly(pg, state, log);
+      await pg.end();
+      process.exit(0);
+    } catch (err) {
+      log.error({ err: String((err as Error).message) }, 'manual nightly failed');
+      process.exit(1);
+    }
+  }
+
   log.info(
     {
       update_check_hours: cfg.UPDATE_CHECK_HOURS,
@@ -67,12 +109,13 @@ async function main() {
   const redis = getRedis(cfg);
   log.info({}, 'redis client initialised');
 
-  // Run both tasks once at startup, sequentially so their logs don't interleave.
+  // Run update-check + maintain once at startup, sequentially.
   await safe('update-check', () => runUpdateCheck(cfg, pg, redis, state, log), log);
   await safe('maintain', () => runMaintainTask(pg, state, log), log);
   await heartbeat(cfg);
 
-  // Schedule periodic runs.
+  // ----- Scheduled tasks -----
+
   const updateMs = cfg.UPDATE_CHECK_HOURS * 3_600_000;
   const maintainMs = cfg.MAINTAIN_HOURS * 3_600_000;
 
@@ -102,8 +145,18 @@ async function main() {
     maintainMs,
   );
 
-  // Write a heartbeat every minute so the healthcheck stays green even
-  // when both tasks are between ticks.
+  // Nightly at 03:00 Toronto. First fire is scheduled precisely; after that,
+  // a 24h interval keeps it aligned (DST handled because we recompute on each
+  // start, and 24h is close enough — if it drifts by an hour post-DST, the
+  // next process restart realigns it).
+  const untilNightly = msUntilNext3amToronto();
+  log.info({ ms_until_first_nightly: untilNightly }, 'nightly scheduled');
+  setTimeout(() => {
+    void safe('nightly', () => runNightly(pg, state, log), log);
+    setInterval(() => void safe('nightly', () => runNightly(pg, state, log), log), 24 * 3_600_000);
+  }, untilNightly);
+
+  // Heartbeat every minute for healthcheck.
   setInterval(() => heartbeat(cfg), 60_000);
 
   // Graceful shutdown.

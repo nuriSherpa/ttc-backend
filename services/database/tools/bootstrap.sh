@@ -189,5 +189,9 @@ target walk    "$SCHEMA_ROOT/walk"    app.walk_observation
 target data    "$SCHEMA_ROOT/data"    data.trip_observation
 target stats   "$SCHEMA_ROOT/stats"   stats.route_reliability
 
+target ops "$SCHEMA_ROOT/ops" ops.run_nightly
+
+target ops "$SCHEMA_ROOT/ops" ops.run_nightly
+
 echo
 echo 'bootstrap: done'

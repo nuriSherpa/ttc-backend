@@ -11,6 +11,9 @@ export interface MaintainerState {
   /** The feed_version currently active in ops.feed. */
   active_feed_version: string | null;
 
+  /** ISO timestamp of the last successful nightly tick. */
+  last_nightly_at: string | null;
+
   /**
    * A downloaded-but-not-yet-activated feed. We hold it here when its
    * start_date is further in the future than ACTIVATE_DAYS_BEFORE_START.
@@ -36,6 +39,7 @@ const EMPTY: MaintainerState = {
   pending: null,
   last_maintain_at: null,
   last_maintain_result: null,
+  last_nightly_at: null,
 };
 
 export class StateStore {

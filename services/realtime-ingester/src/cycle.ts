@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fetchFeed } from './http/fetch-feed.js';
 import { writeAll } from './writers/postgres.js';
 import { writeRedis } from './writers/redis.js';
+import { writeDelays } from './writers/delays.js';
 import { sweepStale } from './writers/sweep.js';
 import type { Config } from './config.js';
 import type { Logger } from './logger.js';
@@ -65,14 +66,32 @@ export async function runCycle(
 
   logger.info({ vehicles: vehicles.length, trips: trips.length, alerts: alerts.length }, 'decoded');
 
+  // Write to rt.* — this is the source of truth that downstream writers read.
   await writeAll(pg, vehicles, trips, alerts);
   logger.info({ ms: Date.now() - t0 }, 'postgres written');
 
-  try {
-    const s = await writeRedis(redis, pg);
-    logger.info({ ...s, totalMs: Date.now() - t0 }, 'redis written');
-  } catch (err) {
-    logger.error({ err: (err as Error).message }, 'redis write failed; Postgres is current');
+  // Redis + delay observations run in parallel — they read the same
+  // rt.vehicle_latest snapshot and don't conflict with each other.
+  const [redisResult, delayResult] = await Promise.all([
+    writeRedis(redis, pg)
+      .then((s) => ({ ok: true as const, stats: s }))
+      .catch((err) => {
+        logger.error({ err: (err as Error).message }, 'redis write failed; Postgres is current');
+        return { ok: false as const, stats: null };
+      }),
+    writeDelays(pg, logger)
+      .then((s) => ({ ok: true as const, stats: s }))
+      .catch((err) => {
+        logger.error({ err: (err as Error).message }, 'delay write failed');
+        return { ok: false as const, stats: null };
+      }),
+  ]);
+
+  if (redisResult.ok && redisResult.stats) {
+    logger.info({ ...redisResult.stats, totalMs: Date.now() - t0 }, 'redis written');
+  }
+  if (delayResult.ok && delayResult.stats) {
+    logger.info({ ...delayResult.stats, totalMs: Date.now() - t0 }, 'delays written');
   }
 
   await sweepStale(pg);
