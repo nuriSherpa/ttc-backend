@@ -23,6 +23,17 @@ const PRUNE_SECONDS = 900;
 // TTC's RT feed uses ghost stop_ids that don't exist in their static GTFS.
 // Match by (route_id, direction_id, ordinal) instead of (trip_id, stop_id) —
 // the same position-based approach used for ETA mapping.
+//
+// ORDER BY priority (important for high-frequency routes):
+//   1. Exact trip_id match — if TTC's RT trip_id is in ref.departures, use it
+//   2. Past departures before future — a late bus should match its own
+//      (past) scheduled departure, not the next trip's on-time departure
+//   3. Closest in absolute time — the tiebreaker
+//
+// Without #2, a bus running 10 min late on a 5-min-headway route matches the
+// next trip's on-time departure, producing a phantom "on-time" record and
+// leaving the actual late trip unrecorded. This was causing 14-min spreads
+// within a single trip_id.
 const BATCH_INSERT_SQL = `
   WITH input AS (
     SELECT * FROM unnest(
@@ -48,7 +59,10 @@ const BATCH_INSERT_SQL = `
         AND d.service_date BETWEEN ops.today() - 1 AND ops.today()
         AND d.departs_at BETWEEN i.vehicle_ts - interval '15 minutes'
                              AND i.vehicle_ts + interval '2 minutes'
-      ORDER BY abs(EXTRACT(EPOCH FROM (d.departs_at - i.vehicle_ts)))
+      ORDER BY
+        (d.trip_id = i.trip_id) DESC,
+        CASE WHEN d.departs_at <= i.vehicle_ts THEN 0 ELSE 1 END,
+        abs(EXTRACT(EPOCH FROM (d.departs_at - i.vehicle_ts)))
       LIMIT 1
     ) d ON true
   )
