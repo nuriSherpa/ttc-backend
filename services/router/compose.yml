@@ -1,0 +1,18 @@
+services:
+  router:
+    build: .
+    container_name: ttc-router
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: '8081'
+      RUST_LOG: ttc_router=debug
+      PGDSN: 'postgres://ttc_router:${ROUTER_DB_PASSWORD}@postgres:5432/ttc?sslmode=disable'
+      REDIS_URL: 'redis://redis:6379'
+      INTERNAL_TOKEN: '${INTERNAL_TOKEN}'
+    ports:
+      - '127.0.0.1:8081:8081'
