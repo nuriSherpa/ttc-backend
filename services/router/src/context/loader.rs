@@ -20,6 +20,10 @@ pub struct PlanFilters {
     pub max_transfers: Option<i16>,
     pub wheelchair_mode: Option<bool>,
     pub avoid_stairs: Option<bool>,
+    /// Override boarding safety margin (seconds). Preset defaults apply
+    /// first (60s balanced/fastest/less_wait, 90s reliable/comfort,
+    /// 120s accessible). Explicit value always wins.
+    pub min_connection_s: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +38,10 @@ pub struct UserPrefs {
     pub prefer_less_walking: bool,
     pub prefer_fewer_transfers: bool,
     pub timezone: String,
+    /// Safety buffer between arriving at a stop and boarding. Skipped when
+    /// the user is already at the stop (0s origin walk). Guards against
+    /// planning 5-15s connections that users miss in practice.
+    pub min_connection_s: i64,
 }
 
 impl Default for UserPrefs {
@@ -49,6 +57,7 @@ impl Default for UserPrefs {
             prefer_less_walking: false,
             prefer_fewer_transfers: true,
             timezone: "America/Toronto".into(),
+            min_connection_s: 60,
         }
     }
 }
@@ -105,17 +114,47 @@ impl CtxLoader {
             UserPrefs::default()
         };
 
+        // ── Preset defaults (lowest priority) ──
+        // `accessible` implies wheelchair + avoid stairs + 2min margin.
+        // Other presets set their own boarding margin.
+        match filters.preset.as_deref() {
+            Some("accessible") => {
+                user.wheelchair_mode = true;
+                user.avoid_stairs = true;
+                user.min_connection_s = 120;
+            }
+            Some("reliable") => {
+                user.min_connection_s = 90;
+            }
+            Some("comfort") => {
+                user.min_connection_s = 90;
+            }
+            _ => {
+                // balanced, fastest, less_wait: keep default 60s
+            }
+        }
+
+        // ── Explicit filter overrides (highest priority) ──
         if let Some(v) = filters.max_walk_m { user.max_walk_m = v; }
         if let Some(v) = filters.max_transfers { user.max_transfers = v; }
         if let Some(v) = filters.wheelchair_mode { user.wheelchair_mode = v; }
         if let Some(v) = filters.avoid_stairs { user.avoid_stairs = v; }
+        if let Some(v) = filters.min_connection_s {
+            user.min_connection_s = v.max(0);
+        }
 
         let depart_at = depart_at.unwrap_or_else(Utc::now);
-        let service_day = match depart_at.weekday() {
+
+        // Service day and hour MUST be Toronto-local — reliability table,
+        // departures table, and all schedule lookups are keyed by Toronto time.
+        // Using UTC here would mismatch by up to 4-5 hours (day boundary + hour).
+        let toronto_dt = depart_at.with_timezone(&chrono_tz::America::Toronto);
+        let service_day = match toronto_dt.weekday() {
             chrono::Weekday::Sat => ServiceDay::Sat,
             chrono::Weekday::Sun => ServiceDay::Sun,
             _ => ServiceDay::Weekday,
         };
+        let hour_bucket = toronto_dt.hour() as u8;
 
         Ok(RoutingContext {
             user_id,
@@ -124,7 +163,7 @@ impl CtxLoader {
             destination,
             depart_at,
             service_day,
-            hour_bucket: depart_at.hour() as u8,
+            hour_bucket,
             filters,
         })
     }
@@ -178,6 +217,7 @@ impl CtxLoader {
             prefer_less_walking: row.7,
             prefer_fewer_transfers: row.8,
             timezone: row.9,
+            min_connection_s: 60,
         };
 
         if let Ok(serialized) = serde_json::to_string(&prefs) {
