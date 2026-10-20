@@ -4,8 +4,10 @@ mod db;
 mod gates;
 mod graph;
 mod http;
-mod raptor; 
-mod walk; 
+mod raptor;
+mod walk;
+pub mod journey;
+pub mod score;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,7 +20,9 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::graph::{
+    live::LiveDelays,
     loader::{load, LoadOptions},
+    reliability::ReliabilityCache,
     Graph,
 };
 
@@ -32,6 +36,10 @@ pub struct AppState {
     pub graph: Arc<RwLock<Graph>>,
     pub graph_loaded: Arc<AtomicBool>,
     pub weather: graph::weather::WeatherCache,
+    /// Layer 10 — live delays from `rt.stop_eta`, refreshed every 30s.
+    pub live: Arc<RwLock<LiveDelays>>,
+    /// Layer 8 — reliability scores from `stats.route_reliability`.
+    pub reliability: Arc<RwLock<ReliabilityCache>>,
 }
 
 #[tokio::main]
@@ -60,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     // ──────────────────────────────────────────────────────────────
     // Layer 1 — graph (synchronous, must succeed)
     // ──────────────────────────────────────────────────────────────
-   let graph = load(&pg, LoadOptions { horizon_days: 3 }).await?;
+    let graph = load(&pg, LoadOptions { horizon_days: 3 }).await?;
     info!(
         duration_ms = graph.load_duration_ms,
         stops = graph.stops.len(),
@@ -84,11 +92,40 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ──────────────────────────────────────────────────────────────
+    // Layer 8 — reliability scores (synchronous, non-fatal)
+    // ──────────────────────────────────────────────────────────────
+    let reliability_cache = Arc::new(RwLock::new(ReliabilityCache::empty()));
+    match graph::reliability::load(&pg).await {
+        Ok(loaded) => {
+            info!(rows = loaded.row_count, "reliability loaded");
+            *reliability_cache.write().await = loaded;
+        }
+        Err(e) => tracing::warn!(err = %e, "reliability load failed (non-fatal)"),
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Layer 10 — live delays cache (populated after state build)
+    // ──────────────────────────────────────────────────────────────
+    let live_cache = Arc::new(RwLock::new(LiveDelays::empty()));
+
+    // ──────────────────────────────────────────────────────────────
     // Build shared state
     // ──────────────────────────────────────────────────────────────
     let ctx_loader = Arc::new(context::loader::CtxLoader::new(pg.clone(), redis.clone()));
     let graph_lock = Arc::new(RwLock::new(graph));
     let graph_loaded = Arc::new(AtomicBool::new(true));
+
+    // First live load — populate cache before router ready.
+    {
+        let g = graph_lock.read().await;
+        match graph::live::load(&pg, &g).await {
+            Ok(loaded) => {
+                info!(rows = loaded.row_count, "live delays loaded");
+                *live_cache.write().await = loaded;
+            }
+            Err(e) => tracing::warn!(err = %e, "live load failed (non-fatal)"),
+        }
+    }
 
     let state = AppState {
         pg,
@@ -99,6 +136,8 @@ async fn main() -> anyhow::Result<()> {
         graph: graph_lock.clone(),
         graph_loaded: graph_loaded.clone(),
         weather: weather_cache.clone(),
+        live: live_cache.clone(),
+        reliability: reliability_cache.clone(),
     };
 
     // Print the DB snapshot once at startup (Layer 0 verification aid)
@@ -112,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
         let graph_lock_clone = graph_lock.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(900));
-            ticker.tick().await; // skip immediate
+            ticker.tick().await;
             loop {
                 ticker.tick().await;
                 info!("graph refresh starting");
@@ -137,11 +176,62 @@ async fn main() -> anyhow::Result<()> {
         let weather_clone = state.weather.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(600));
-            ticker.tick().await; // skip immediate
+            ticker.tick().await;
             loop {
                 ticker.tick().await;
                 if let Err(e) = graph::weather::refresh(&pg_clone, &weather_clone).await {
                     tracing::error!(err = %e, "weather refresh failed");
+                }
+            }
+        });
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Background: reliability refresh every 30 minutes
+    // ──────────────────────────────────────────────────────────────
+    {
+        let pg_clone = state.pg.clone();
+        let rel_clone = state.reliability.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1800));
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                match graph::reliability::load(&pg_clone).await {
+                    Ok(loaded) => {
+                        let rows = loaded.row_count;
+                        *rel_clone.write().await = loaded;
+                        tracing::debug!(rows, "reliability refreshed");
+                    }
+                    Err(e) => tracing::warn!(err = %e, "reliability refresh failed"),
+                }
+            }
+        });
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Background: live delays refresh every 30 seconds (Layer 10)
+    // ──────────────────────────────────────────────────────────────
+    {
+        let pg_clone = state.pg.clone();
+        let live_clone = state.live.clone();
+        let graph_lock_clone = graph_lock.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let result = {
+                    let g = graph_lock_clone.read().await;
+                    graph::live::load(&pg_clone, &g).await
+                };
+                match result {
+                    Ok(loaded) => {
+                        let rows = loaded.row_count;
+                        *live_clone.write().await = loaded;
+                        tracing::debug!(rows, "live delays refreshed");
+                    }
+                    Err(e) => tracing::warn!(err = %e, "live refresh failed"),
                 }
             }
         });

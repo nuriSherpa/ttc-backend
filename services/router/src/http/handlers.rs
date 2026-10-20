@@ -21,6 +21,7 @@ pub struct PlanRequest {
     pub origin: LatLon,
     pub destination: LatLon,
     pub depart_at: Option<DateTime<Utc>>,
+    pub arrive_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub filters: PlanFilters,
 }
@@ -44,12 +45,12 @@ pub struct PlanMeta {
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     let pg_ok = sqlx::query("SELECT 1").fetch_one(&state.pg).await.is_ok();
 
-let mut r = state.redis.clone();
-let pong: String = redis::cmd("PING")
-    .query_async(&mut r)
-    .await
-    .unwrap_or_default();
-let redis_ok = pong == "PONG";
+    let mut r = state.redis.clone();
+    let pong: String = redis::cmd("PING")
+        .query_async(&mut r)
+        .await
+        .unwrap_or_default();
+    let redis_ok = pong == "PONG";
 
     let graph_loaded = state.graph_loaded.load(Ordering::Relaxed);
     let ok = pg_ok && redis_ok && graph_loaded;
@@ -93,38 +94,368 @@ pub async fn graph_status(
     })))
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// /plan — full pipeline: gates → run_shifted → assemble → score
+// ────────────────────────────────────────────────────────────────────────────
 pub async fn plan(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<PlanRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    use crate::raptor::raptor::ShiftPolicy;
+    use crate::score::{Preset, ScoreContext, TimeMode};
+
     check_internal_token(&state, &headers)?;
+
+    // ── Resolve time mode ──
+    let (time_mode, anchor) = match (req.depart_at, req.arrive_at) {
+        (Some(d), None) => (TimeMode::LeaveAt, d),
+        (None, Some(a)) => (TimeMode::ArriveBy, a),
+        (None, None) => (TimeMode::LeaveAt, Utc::now()),
+        (Some(_), Some(_)) => {
+            return Err(ApiError::BadRequest(
+                "specify depart_at XOR arrive_at, not both".into(),
+            ))
+        }
+    };
 
     let ctx = state
         .ctx_loader
-        .build(req.user_id, req.filters, req.origin, req.destination, req.depart_at)
+        .build(
+            req.user_id,
+            req.filters,
+            req.origin,
+            req.destination,
+            Some(anchor),
+        )
         .await
         .map_err(ApiError::Internal)?;
 
+    let prefs = &ctx.user;
+    let preset = Preset::from_opt(ctx.filters.preset.as_deref());
+
     tracing::info!(
         user_id = ?ctx.user_id,
-        wheelchair = ctx.user.wheelchair_mode,
-        hour = ctx.hour_bucket,
-        service_day = ctx.service_day.as_str(),
+        preset = preset.as_str(),
+        mode = ?time_mode,
+        anchor = %anchor,
         "plan request"
     );
 
+    // Weather at origin
+    let weather_multiplier = crate::graph::weather::at(
+        &state.weather,
+        ctx.origin.lat,
+        ctx.origin.lon,
+        anchor,
+    )
+    .await
+    .map(|w| w.condition.walk_penalty(w.severity))
+    .unwrap_or(1.0);
+
+    let graph = state.graph.read().await;
+    let live = state.live.read().await;
+
+    // Search radius MUST be at least max_walk_m / detour_factor, otherwise
+    // stops that would pass the walk gate are never found. Walk distance is
+    // always >= straight distance, so using max_walk_m as the straight-line
+    // search bound guarantees every walkable stop is found.
+    let walk_margin = (prefs.max_walk_m as f64) / prefs.detour_factor + 50.0;
+    let radius = match preset {
+        Preset::Fastest => walk_margin.max(1000.0),
+        _ => walk_margin.max(400.0),
+    };
+
+    let origin_candidates = build_candidates(
+        &graph,
+        &state.weather,
+        prefs,
+        ctx.origin.lat,
+        ctx.origin.lon,
+        radius,
+        anchor,
+    )
+    .await;
+    let dest_candidates = build_candidates(
+        &graph,
+        &state.weather,
+        prefs,
+        ctx.destination.lat,
+        ctx.destination.lon,
+        radius,
+        anchor,
+    )
+    .await;
+
+    let mut warnings: Vec<String> = Vec::new();
+
+    if origin_candidates.is_empty() || dest_candidates.is_empty() {
+        warnings.push(format!(
+            "No stops passed gates (origin={}, dest={}). \
+             Try increasing max_walk_m (currently {}m) or expanding search radius.",
+            origin_candidates.len(),
+            dest_candidates.len(),
+            prefs.max_walk_m
+        ));
+        return Ok(Json(PlanResponse {
+            recommended: None,
+            alternatives: vec![],
+            meta: PlanMeta {
+                as_of: Utc::now(),
+                data_freshness_s: (Utc::now() - live.loaded_at).num_seconds().max(0) as u64,
+                graph_loaded: state.graph_loaded.load(Ordering::Relaxed),
+                gates_applied: gates_applied(&preset),
+                warnings,
+            },
+        }));
+    }
+
+    // ── Offsets + policy per mode ──
+    let (offsets, policy, arrive_deadline) = match time_mode {
+        TimeMode::LeaveAt => (
+            vec![0, 300, 600, 900],
+            ShiftPolicy::EarliestArrival,
+            None,
+        ),
+        TimeMode::ArriveBy => {
+            // 2-hour window back from deadline, 5-minute steps
+            let offsets: Vec<i64> = (-24..=0).map(|i| i * 300).collect();
+            (offsets, ShiftPolicy::LatestDeparture, Some(anchor))
+        }
+    };
+
+    let mut shifted = crate::raptor::raptor::run_shifted(
+        &graph,
+        &origin_candidates,
+        &dest_candidates,
+        anchor,
+        prefs,
+        weather_multiplier,
+        &offsets,
+        &live,
+        policy,
+    );
+
+    // For arrive_by, filter to journeys arriving at or before the deadline.
+    if let Some(deadline) = arrive_deadline {
+        shifted.retain(|(j, base)| {
+            let arrival = *base + chrono::Duration::seconds(j.arrive_s as i64);
+            arrival <= deadline
+        });
+    }
+
+    if shifted.is_empty() {
+        let local = anchor.with_timezone(&chrono_tz::America::Toronto);
+        warnings.push(match time_mode {
+            TimeMode::LeaveAt => format!(
+                "No route departing {} Toronto within max_transfers={}, max_walk_m={}m{}",
+                local.format("%H:%M"),
+                prefs.max_transfers,
+                prefs.max_walk_m,
+                if prefs.wheelchair_mode || prefs.avoid_stairs {
+                    " [accessible]"
+                } else {
+                    ""
+                },
+            ),
+            TimeMode::ArriveBy => format!(
+                "No route arriving before {} Toronto within max_transfers={}, max_walk_m={}m{}",
+                local.format("%H:%M"),
+                prefs.max_transfers,
+                prefs.max_walk_m,
+                if prefs.wheelchair_mode || prefs.avoid_stairs {
+                    " [accessible]"
+                } else {
+                    ""
+                },
+            ),
+        });
+    }
+
+    // ── Assemble each journey using its OWN base departure ──
+    let mut assembled: Vec<crate::journey::types::JourneyResponse> = shifted
+        .iter()
+        .map(|(j, base)| {
+            crate::journey::assemble::assemble(
+                &graph,
+                j,
+                *base,
+                &ctx.origin,
+                &ctx.destination,
+                &origin_candidates,
+                &dest_candidates,
+            )
+        })
+        .collect();
+
+    // ── Inject walk-only alternative when origin→dest is walkable ──
+    let direct_m = haversine_m(
+        ctx.origin.lat,
+        ctx.origin.lon,
+        ctx.destination.lat,
+        ctx.destination.lon,
+    );
+    let walk_m = direct_m * prefs.detour_factor;
+    if walk_m <= prefs.max_walk_m as f64 {
+        let walk_ctx = crate::walk::types::WalkContext {
+            from_lat: ctx.origin.lat,
+            from_lon: ctx.origin.lon,
+            to_lat: ctx.destination.lat,
+            to_lon: ctx.destination.lon,
+            raw_distance_m: direct_m,
+            depart_at: anchor,
+            user: prefs,
+            weather: &state.weather,
+        };
+        let est = crate::walk::pipeline::estimate(&walk_ctx).await;
+        assembled.push(make_walk_only_journey(
+            anchor,
+            &ctx.origin,
+            &ctx.destination,
+            est.walk_m,
+            est.seconds,
+            est.breakdown,
+        ));
+    }
+
+    // ── Score with reliability cache ──
+    let reliability = state.reliability.read().await;
+    let score_ctx = ScoreContext {
+        requested_depart_at: anchor,
+        requested_arrive_at: arrive_deadline,
+        mode: time_mode,
+        max_walk_m: prefs.max_walk_m,
+        hour: ctx.hour_bucket,
+        day_type: ctx.service_day.as_str().to_string(),
+        reliability: if reliability.scores.is_empty() {
+            None
+        } else {
+            Some(crate::graph::reliability::ReliabilityCache {
+                scores: reliability.scores.clone(),
+                loaded_at: reliability.loaded_at,
+                row_count: reliability.row_count,
+            })
+        },
+    };
+    let mut scored = crate::score::score(assembled, preset, &score_ctx);
+
+    // ── Hard filter: journey-level walk cap ──
+    let max_walk = prefs.max_walk_m as f64;
+    let pre_filter = scored.len();
+    scored.retain(|s| s.journey.total_walk_m <= max_walk);
+    if scored.is_empty() && pre_filter > 0 {
+        warnings.push(format!(
+            "All routes exceeded max_walk_m ({}m). Try increasing it.",
+            prefs.max_walk_m
+        ));
+    }
+
+    // ── Slice top 3 ──
+    let (recommended, alternatives) = if scored.is_empty() {
+        (None, vec![])
+    } else {
+        let mut iter = scored.into_iter();
+        let first = iter.next().map(scored_to_json);
+        let rest: Vec<serde_json::Value> = iter.take(2).map(scored_to_json).collect();
+        (first, rest)
+    };
+
     Ok(Json(PlanResponse {
-        recommended: None,
-        alternatives: vec![],
+        recommended,
+        alternatives,
         meta: PlanMeta {
             as_of: Utc::now(),
-            data_freshness_s: 0,
+            data_freshness_s: (Utc::now() - live.loaded_at).num_seconds().max(0) as u64,
             graph_loaded: state.graph_loaded.load(Ordering::Relaxed),
-            gates_applied: vec![],
-            warnings: vec!["routing pipeline not yet implemented (Layer 0 only)".into()],
+            gates_applied: gates_applied(&preset),
+            warnings,
         },
     }))
+}
+
+fn gates_applied(preset: &crate::score::Preset) -> Vec<String> {
+    let mut v = vec![
+        "geo".into(),
+        "accessibility".into(),
+        "walk".into(),
+        "max_walk".into(),
+    ];
+    if matches!(preset, crate::score::Preset::Accessible) {
+        v.push("preset:accessible".into());
+    }
+    v
+}
+
+/// Shape a `ScoredJourney` into the JSON body used by `/plan`.
+fn scored_to_json(s: crate::score::ScoredJourney) -> serde_json::Value {
+    serde_json::json!({
+        "journey": s.journey,
+        "score": (s.score * 10.0).round() / 10.0,
+        "reasons": s.reasons,
+        "departure_slip_s": s.departure_slip_s,
+    })
+}
+
+/// Synthetic walk-only journey — one WalkLeg from origin to dest.
+fn make_walk_only_journey(
+    depart_at: DateTime<Utc>,
+    origin: &LatLon,
+    dest: &LatLon,
+    walk_m: f64,
+    walk_s: u32,
+    breakdown: crate::walk::types::WalkBreakdown,
+) -> crate::journey::types::JourneyResponse {
+    use crate::journey::types::*;
+    let arrive_at = depart_at + chrono::Duration::seconds(walk_s as i64);
+    let detour = breakdown.detour_factor.unwrap_or(1.30);
+    let straight = if detour > 0.0 { walk_m / detour } else { walk_m };
+
+    JourneyResponse {
+        legs: vec![ResponseLeg::Walk(WalkLeg {
+            walk_kind: WalkKind::Destination,
+            from: Location {
+                lat: origin.lat,
+                lon: origin.lon,
+                label: "Origin".into(),
+                stop_id: None,
+            },
+            to: Location {
+                lat: dest.lat,
+                lon: dest.lon,
+                label: "Destination".into(),
+                stop_id: None,
+            },
+            depart_at,
+            arrive_at,
+            duration_s: walk_s,
+            distance_m: walk_m,
+            distance_m_straight: straight,
+            detour_factor: detour,
+            breakdown: Some(breakdown),
+        })],
+        depart_at,
+        arrive_at,
+        total_seconds: walk_s,
+        total_transit_seconds: 0,
+        total_wait_seconds: 0,
+        total_walk_seconds: walk_s,
+        total_walk_m: walk_m,
+        num_transfers: 0,
+        real_transfers: 0,
+        waypoint_arrivals: vec![],
+    }
+}
+
+/// Straight-line distance in meters.
+fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const R: f64 = 6_371_000.0;
+    let phi1 = lat1.to_radians();
+    let phi2 = lat2.to_radians();
+    let dphi = (lat2 - lat1).to_radians();
+    let dlambda = (lon2 - lon1).to_radians();
+    let a = (dphi / 2.0).sin().powi(2)
+        + phi1.cos() * phi2.cos() * (dlambda / 2.0).sin().powi(2);
+    2.0 * R * a.sqrt().asin()
 }
 
 #[derive(serde::Deserialize)]
@@ -137,8 +468,12 @@ pub struct NearestQuery {
     pub limit: usize,
 }
 
-fn default_radius() -> f64 { 1000.0 }
-fn default_limit() -> usize { 15 }
+fn default_radius() -> f64 {
+    1000.0
+}
+fn default_limit() -> usize {
+    15
+}
 
 pub async fn nearest(
     State(state): State<AppState>,
@@ -149,12 +484,14 @@ pub async fn nearest(
 
     if q.radius <= 0.0 || q.radius > 10_000.0 {
         return Err(ApiError::BadRequest(format!(
-            "radius must be 0 < r <= 10000, got {}", q.radius
+            "radius must be 0 < r <= 10000, got {}",
+            q.radius
         )));
     }
     if q.limit == 0 || q.limit > 50 {
         return Err(ApiError::BadRequest(format!(
-            "limit must be 1..=50, got {}", q.limit
+            "limit must be 1..=50, got {}",
+            q.limit
         )));
     }
 
@@ -193,8 +530,6 @@ pub async fn nearest(
     })))
 }
 
-
-
 #[derive(Deserialize)]
 pub struct WalkQuery {
     pub lat: f64,
@@ -216,12 +551,14 @@ pub async fn walk(
 
     if q.radius <= 0.0 || q.radius > 10_000.0 {
         return Err(ApiError::BadRequest(format!(
-            "radius must be 0 < r <= 10000, got {}", q.radius
+            "radius must be 0 < r <= 10000, got {}",
+            q.radius
         )));
     }
     if q.limit == 0 || q.limit > 50 {
         return Err(ApiError::BadRequest(format!(
-            "limit must be 1..=50, got {}", q.limit
+            "limit must be 1..=50, got {}",
+            q.limit
         )));
     }
 
@@ -281,7 +618,6 @@ pub async fn walk(
     })))
 }
 
-
 #[derive(Deserialize)]
 pub struct GatesQuery {
     pub lat: f64,
@@ -299,15 +635,24 @@ pub async fn gates(
     headers: HeaderMap,
     Query(q): Query<GatesQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    use crate::gates::{accessibility, max_walk, types::{Candidate, GateStats}};
+    use crate::gates::{
+        accessibility, max_walk,
+        types::{Candidate, GateStats},
+    };
 
     check_internal_token(&state, &headers)?;
 
     if q.radius <= 0.0 || q.radius > 10_000.0 {
-        return Err(ApiError::BadRequest(format!("radius out of range: {}", q.radius)));
+        return Err(ApiError::BadRequest(format!(
+            "radius out of range: {}",
+            q.radius
+        )));
     }
     if q.limit == 0 || q.limit > 50 {
-        return Err(ApiError::BadRequest(format!("limit out of range: {}", q.limit)));
+        return Err(ApiError::BadRequest(format!(
+            "limit out of range: {}",
+            q.limit
+        )));
     }
 
     let prefs = if let Some(uid) = q.user_id {
@@ -319,7 +664,6 @@ pub async fn gates(
 
     let graph = state.graph.read().await;
 
-    // Step 1 — geo candidates
     let raw = graph.geo_index.nearest(q.lat, q.lon, q.radius, q.limit);
     let input_count = raw.len();
     let candidates: Vec<Candidate> = raw
@@ -333,10 +677,8 @@ pub async fn gates(
         })
         .collect();
 
-    // Step 2 — accessibility gate (before walk — cheaper)
     let (candidates, acc_dropped) = accessibility::apply(candidates, &graph, &prefs);
 
-    // Step 3 — walk pipeline for survivors
     let mut candidates_with_walk = Vec::with_capacity(candidates.len());
     for mut c in candidates {
         let stop = &graph.stops[c.stop_idx as usize];
@@ -355,8 +697,6 @@ pub async fn gates(
         candidates_with_walk.push(c);
     }
 
-    // Step 4 — max walk gate
-    let before_mw = candidates_with_walk.len();
     let (mut final_candidates, mw_dropped) = max_walk::apply(candidates_with_walk, &prefs);
     for c in &mut final_candidates {
         c.gates_passed.push("max_walk");
@@ -369,9 +709,7 @@ pub async fn gates(
         max_walk_dropped: mw_dropped,
         output: output_count,
     };
-    let _ = before_mw;
 
-    // Reshape for response
     let results: Vec<serde_json::Value> = final_candidates
         .iter()
         .map(|c| {
@@ -407,7 +745,9 @@ pub async fn gates(
     })))
 }
 
-
+// ────────────────────────────────────────────────────────────────────────────
+// /debug/raptor — raw (legacy) or assembled
+// ────────────────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct RaptorQuery {
@@ -419,13 +759,17 @@ pub struct RaptorQuery {
     pub radius: f64,
     pub user_id: Option<Uuid>,
     pub depart_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub raw: bool,
 }
 
 async fn build_candidates(
     graph: &crate::graph::Graph,
     weather: &crate::graph::weather::WeatherCache,
     prefs: &crate::context::loader::UserPrefs,
-    lat: f64, lon: f64, radius: f64,
+    lat: f64,
+    lon: f64,
+    radius: f64,
     depart_at: DateTime<Utc>,
 ) -> Vec<crate::gates::types::Candidate> {
     use crate::gates::{accessibility, max_walk, types::Candidate};
@@ -434,7 +778,8 @@ async fn build_candidates(
     let candidates: Vec<Candidate> = raw
         .into_iter()
         .map(|(stop_idx, raw_distance_m)| Candidate {
-            stop_idx, raw_distance_m,
+            stop_idx,
+            raw_distance_m,
             walk_estimate: None,
             gates_passed: vec!["geo"],
             gate_failed: None,
@@ -447,8 +792,10 @@ async fn build_candidates(
     for mut c in candidates {
         let stop = &graph.stops[c.stop_idx as usize];
         let ctx = crate::walk::types::WalkContext {
-            from_lat: lat, from_lon: lon,
-            to_lat: stop.lat, to_lon: stop.lon,
+            from_lat: lat,
+            from_lon: lon,
+            to_lat: stop.lat,
+            to_lon: stop.lon,
             raw_distance_m: c.raw_distance_m,
             depart_at,
             user: prefs,
@@ -477,18 +824,41 @@ pub async fn raptor(
     };
     let depart_at = q.depart_at.unwrap_or_else(Utc::now);
 
+    let weather_multiplier = crate::graph::weather::at(
+        &state.weather,
+        q.origin_lat,
+        q.origin_lon,
+        depart_at,
+    )
+    .await
+    .map(|w| w.condition.walk_penalty(w.severity))
+    .unwrap_or(1.0);
+
     let graph = state.graph.read().await;
+    let live = state.live.read().await;
     let t0 = std::time::Instant::now();
 
     let origin_candidates = build_candidates(
-        &graph, &state.weather, &prefs,
-        q.origin_lat, q.origin_lon, q.radius, depart_at,
-    ).await;
+        &graph,
+        &state.weather,
+        &prefs,
+        q.origin_lat,
+        q.origin_lon,
+        q.radius,
+        depart_at,
+    )
+    .await;
 
     let dest_candidates = build_candidates(
-        &graph, &state.weather, &prefs,
-        q.dest_lat, q.dest_lon, q.radius, depart_at,
-    ).await;
+        &graph,
+        &state.weather,
+        &prefs,
+        q.dest_lat,
+        q.dest_lon,
+        q.radius,
+        depart_at,
+    )
+    .await;
 
     if origin_candidates.is_empty() || dest_candidates.is_empty() {
         return Ok(Json(serde_json::json!({
@@ -499,62 +869,98 @@ pub async fn raptor(
     }
 
     let journeys = crate::raptor::raptor::run(
-        &graph, &origin_candidates, &dest_candidates, depart_at, &prefs,
+        &graph,
+        &origin_candidates,
+        &dest_candidates,
+        depart_at,
+        &prefs,
+        weather_multiplier,
+        &live,
     );
 
     let elapsed_us = t0.elapsed().as_micros() as u64;
 
-    let journeys_json: Vec<serde_json::Value> = journeys
-        .iter()
-        .map(|j| {
-            let legs_json: Vec<serde_json::Value> = j.legs.iter().map(|leg| {
-                use crate::raptor::raptor::LegKind;
-                let from_name = if leg.from_stop == u32::MAX {
-                    "origin".to_string()
-                } else {
-                    graph.stops[leg.from_stop as usize].name.clone()
-                };
-                let to_name = if leg.to_stop == u32::MAX {
-                    "destination".to_string()
-                } else {
-                    graph.stops[leg.to_stop as usize].name.clone()
-                };
-                let route_info = leg.trip_idx.map(|tidx| {
-                    let trip = &graph.trips[tidx as usize];
-                    let route = &graph.routes[trip.route_idx as usize];
-                    serde_json::json!({
-                        "route_id": route.route_id,
-                        "short_name": route.short_name,
-                        "headsign": trip.headsign,
+    let journeys_json: Vec<serde_json::Value> = if q.raw {
+        journeys
+            .iter()
+            .map(|j| {
+                let legs_json: Vec<serde_json::Value> = j
+                    .legs
+                    .iter()
+                    .map(|leg| {
+                        use crate::raptor::raptor::LegKind;
+                        let from_name = if leg.from_stop == u32::MAX {
+                            "origin".to_string()
+                        } else {
+                            graph.stops[leg.from_stop as usize].name.clone()
+                        };
+                        let to_name = if leg.to_stop == u32::MAX {
+                            "destination".to_string()
+                        } else {
+                            graph.stops[leg.to_stop as usize].name.clone()
+                        };
+                        let route_info = leg.trip_idx.map(|tidx| {
+                            let trip = &graph.trips[tidx as usize];
+                            let route = &graph.routes[trip.route_idx as usize];
+                            serde_json::json!({
+                                "route_id": route.route_id,
+                                "short_name": route.short_name,
+                                "headsign": trip.headsign,
+                            })
+                        });
+                        serde_json::json!({
+                            "kind": match leg.kind {
+                                LegKind::OriginWalk => "origin_walk",
+                                LegKind::Transit => "transit",
+                                LegKind::TransferWalk => "transfer_walk",
+                                LegKind::DestWalk => "dest_walk",
+                            },
+                            "from": from_name,
+                            "to": to_name,
+                            "depart_s": leg.depart_s,
+                            "arrive_s": leg.arrive_s,
+                            "duration_s": leg.arrive_s.saturating_sub(leg.depart_s),
+                            "walk_m": (leg.walk_m * 10.0).round() / 10.0,
+                            "trip": route_info,
+                        })
                     })
-                });
-                serde_json::json!({
-                    "kind": match leg.kind {
-                        LegKind::OriginWalk => "origin_walk",
-                        LegKind::Transit => "transit",
-                        LegKind::TransferWalk => "transfer_walk",
-                        LegKind::DestWalk => "dest_walk",
-                    },
-                    "from": from_name,
-                    "to": to_name,
-                    "depart_s": leg.depart_s,
-                    "arrive_s": leg.arrive_s,
-                    "duration_s": leg.arrive_s.saturating_sub(leg.depart_s),
-                    "walk_m": (leg.walk_m * 10.0).round() / 10.0,
-                    "trip": route_info,
-                })
-            }).collect();
+                    .collect();
 
-            serde_json::json!({
-                "depart_s": j.depart_s,
-                "arrive_s": j.arrive_s,
-                "total_seconds": j.arrive_s,
-                "num_transfers": j.num_transfers,
-                "total_walk_m": (j.total_walk_m * 10.0).round() / 10.0,
-                "legs": legs_json,
+                serde_json::json!({
+                    "depart_s": j.depart_s,
+                    "arrive_s": j.arrive_s,
+                    "total_seconds": j.arrive_s,
+                    "num_transfers": j.num_transfers,
+                    "total_walk_m": (j.total_walk_m * 10.0).round() / 10.0,
+                    "legs": legs_json,
+                })
             })
-        })
-        .collect();
+            .collect()
+    } else {
+        let origin = LatLon {
+            lat: q.origin_lat,
+            lon: q.origin_lon,
+        };
+        let destination = LatLon {
+            lat: q.dest_lat,
+            lon: q.dest_lon,
+        };
+        journeys
+            .iter()
+            .map(|j| {
+                let resp = crate::journey::assemble::assemble(
+                    &graph,
+                    j,
+                    depart_at,
+                    &origin,
+                    &destination,
+                    &origin_candidates,
+                    &dest_candidates,
+                );
+                serde_json::to_value(resp).expect("JourneyResponse is Serialize")
+            })
+            .collect()
+    };
 
     Ok(Json(serde_json::json!({
         "query": {
@@ -574,6 +980,7 @@ pub async fn raptor(
             "dest_candidates": dest_candidates.len(),
             "journeys_found": journeys.len(),
             "elapsed_us": elapsed_us,
+            "raw": q.raw,
         },
         "journeys": journeys_json,
     })))
