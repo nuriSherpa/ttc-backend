@@ -95,19 +95,186 @@ pub async fn graph_status(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// /plan — full pipeline: gates → run_shifted → assemble → score
+// Internal pipeline helper — standalone async fn so it can be called in
+// the tier ladder without closure lifetime headaches.
+// ────────────────────────────────────────────────────────────────────────────
+#[allow(clippy::too_many_arguments)]
+async fn run_plan_pipeline(
+    graph: &crate::graph::Graph,
+    weather: &crate::graph::weather::WeatherCache,
+    reliability: &crate::graph::reliability::ReliabilityCache,
+    origin: &LatLon,
+    destination: &LatLon,
+    anchor: DateTime<Utc>,
+    time_mode: crate::score::TimeMode,
+    preset: crate::score::Preset,
+    effective_prefs: &crate::context::loader::UserPrefs,
+    service_day: crate::context::loader::ServiceDay,
+    hour_bucket: u8,
+    live: &crate::graph::live::LiveDelays,
+    weather_multiplier: f32,
+    apply_walk_only: bool,
+    warnings: &mut Vec<String>,
+) -> Vec<crate::score::ScoredJourney> {
+    use crate::raptor::raptor::ShiftPolicy;
+    use crate::score::ScoreContext;
+
+    let walk_margin =
+        (effective_prefs.max_walk_m as f64) / effective_prefs.detour_factor.max(1.0) + 50.0;
+    let radius = match preset {
+        crate::score::Preset::Fastest => walk_margin.max(1000.0),
+        _ => walk_margin.max(400.0),
+    };
+
+    let origin_candidates = build_candidates(
+        graph,
+        weather,
+        effective_prefs,
+        origin.lat,
+        origin.lon,
+        radius,
+        anchor,
+    )
+    .await;
+    let dest_candidates = build_candidates(
+        graph,
+        weather,
+        effective_prefs,
+        destination.lat,
+        destination.lon,
+        radius,
+        anchor,
+    )
+    .await;
+
+    if origin_candidates.is_empty() || dest_candidates.is_empty() {
+        let nearest = graph
+            .geo_index
+            .nearest(destination.lat, destination.lon, radius * 2.0, 1);
+        let hint = nearest
+            .first()
+            .map(|(_, m)| format!("nearest stop {:.0}m from destination", m))
+            .unwrap_or_else(|| "no stops within expanded radius".to_string());
+        warnings.push(format!(
+            "No stops reachable at destination within {}m walk. {}.",
+            effective_prefs.max_walk_m, hint
+        ));
+        return Vec::new();
+    }
+
+    let (offsets, policy, arrive_deadline) = match time_mode {
+        crate::score::TimeMode::LeaveAt => (
+            vec![0, 300, 600, 900],
+            ShiftPolicy::EarliestArrival,
+            None,
+        ),
+        crate::score::TimeMode::ArriveBy => {
+            let offsets: Vec<i64> = (-24..=0).map(|i| i * 300).collect();
+            (offsets, ShiftPolicy::LatestDeparture, Some(anchor))
+        }
+    };
+
+    let mut shifted = crate::raptor::raptor::run_shifted(
+        graph,
+        &origin_candidates,
+        &dest_candidates,
+        anchor,
+        effective_prefs,
+        weather_multiplier,
+        &offsets,
+        live,
+        policy,
+    );
+
+    if let Some(deadline) = arrive_deadline {
+        shifted.retain(|(j, base)| {
+            let arrival = *base + chrono::Duration::seconds(j.arrive_s as i64);
+            arrival <= deadline
+        });
+    }
+
+    if shifted.is_empty() {
+        warnings.push(format!(
+            "No route found departing at this hour within transfer limit ({}).",
+            effective_prefs.max_transfers
+        ));
+        return Vec::new();
+    }
+
+    let mut assembled: Vec<crate::journey::types::JourneyResponse> = shifted
+        .iter()
+        .map(|(j, base)| {
+            crate::journey::assemble::assemble(
+                graph,
+                j,
+                *base,
+                origin,
+                destination,
+                &origin_candidates,
+                &dest_candidates,
+            )
+        })
+        .collect();
+
+    if apply_walk_only {
+        let direct_m = haversine_m(origin.lat, origin.lon, destination.lat, destination.lon);
+        let walk_m = direct_m * effective_prefs.detour_factor;
+        let walk_only_cap = (effective_prefs.max_walk_m as f64).max(2500.0);
+        if walk_m <= walk_only_cap {
+            let walk_ctx = crate::walk::types::WalkContext {
+                from_lat: origin.lat,
+                from_lon: origin.lon,
+                to_lat: destination.lat,
+                to_lon: destination.lon,
+                raw_distance_m: direct_m,
+                depart_at: anchor,
+                user: effective_prefs,
+                weather,
+            };
+            let est = crate::walk::pipeline::estimate(&walk_ctx).await;
+            assembled.push(make_walk_only_journey(
+                anchor,
+                origin,
+                destination,
+                est.walk_m,
+                est.seconds,
+                est.breakdown,
+            ));
+        }
+    }
+
+    let score_ctx = ScoreContext {
+        requested_depart_at: anchor,
+        requested_arrive_at: arrive_deadline,
+        mode: time_mode,
+        max_walk_m: effective_prefs.max_walk_m,
+        hour: hour_bucket,
+        day_type: service_day.as_str().to_string(),
+        reliability: if reliability.scores.is_empty() {
+            None
+        } else {
+            Some(crate::graph::reliability::ReliabilityCache {
+                scores: reliability.scores.clone(),
+                loaded_at: reliability.loaded_at,
+                row_count: reliability.row_count,
+            })
+        },
+    };
+    crate::score::score(assembled, preset, &score_ctx)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// /plan — 4-tier fallback: user prefs → 2× → 4× → nearest running service
 // ────────────────────────────────────────────────────────────────────────────
 pub async fn plan(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<PlanRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    use crate::raptor::raptor::ShiftPolicy;
-    use crate::score::{Preset, ScoreContext, TimeMode};
+    use crate::score::{Preset, TimeMode};
 
     check_internal_token(&state, &headers)?;
 
-    // ── Resolve time mode ──
     let (time_mode, anchor) = match (req.depart_at, req.arrive_at) {
         (Some(d), None) => (TimeMode::LeaveAt, d),
         (None, Some(a)) => (TimeMode::ArriveBy, a),
@@ -139,10 +306,10 @@ pub async fn plan(
         preset = preset.as_str(),
         mode = ?time_mode,
         anchor = %anchor,
+        max_walk = prefs.max_walk_m,
         "plan request"
     );
 
-    // Weather at origin
     let weather_multiplier = crate::graph::weather::at(
         &state.weather,
         ctx.origin.lat,
@@ -155,206 +322,184 @@ pub async fn plan(
 
     let graph = state.graph.read().await;
     let live = state.live.read().await;
-
-    // Search radius MUST be at least max_walk_m / detour_factor, otherwise
-    // stops that would pass the walk gate are never found. Walk distance is
-    // always >= straight distance, so using max_walk_m as the straight-line
-    // search bound guarantees every walkable stop is found.
-    let walk_margin = (prefs.max_walk_m as f64) / prefs.detour_factor + 50.0;
-    let radius = match preset {
-        Preset::Fastest => walk_margin.max(1000.0),
-        _ => walk_margin.max(400.0),
-    };
-
-    let origin_candidates = build_candidates(
-        &graph,
-        &state.weather,
-        prefs,
-        ctx.origin.lat,
-        ctx.origin.lon,
-        radius,
-        anchor,
-    )
-    .await;
-    let dest_candidates = build_candidates(
-        &graph,
-        &state.weather,
-        prefs,
-        ctx.destination.lat,
-        ctx.destination.lon,
-        radius,
-        anchor,
-    )
-    .await;
+    let reliability = state.reliability.read().await;
 
     let mut warnings: Vec<String> = Vec::new();
+    let hard_cap = prefs.max_walk_m as f64;
 
-    if origin_candidates.is_empty() || dest_candidates.is_empty() {
-        warnings.push(format!(
-            "No stops passed gates (origin={}, dest={}). \
-             Try increasing max_walk_m (currently {}m) or expanding search radius.",
-            origin_candidates.len(),
-            dest_candidates.len(),
-            prefs.max_walk_m
-        ));
-        return Ok(Json(PlanResponse {
-            recommended: None,
-            alternatives: vec![],
-            meta: PlanMeta {
-                as_of: Utc::now(),
-                data_freshness_s: (Utc::now() - live.loaded_at).num_seconds().max(0) as u64,
-                graph_loaded: state.graph_loaded.load(Ordering::Relaxed),
-                gates_applied: gates_applied(&preset),
-                warnings,
-            },
-        }));
-    }
-
-    // ── Offsets + policy per mode ──
-    let (offsets, policy, arrive_deadline) = match time_mode {
-        TimeMode::LeaveAt => (
-            vec![0, 300, 600, 900],
-            ShiftPolicy::EarliestArrival,
-            None,
-        ),
-        TimeMode::ArriveBy => {
-            // 2-hour window back from deadline, 5-minute steps
-            let offsets: Vec<i64> = (-24..=0).map(|i| i * 300).collect();
-            (offsets, ShiftPolicy::LatestDeparture, Some(anchor))
-        }
-    };
-
-    let mut shifted = crate::raptor::raptor::run_shifted(
+    // ── Tier 1: user's max_walk_m ──
+    let scored = run_plan_pipeline(
         &graph,
-        &origin_candidates,
-        &dest_candidates,
+        &state.weather,
+        &reliability,
+        &ctx.origin,
+        &ctx.destination,
         anchor,
+        time_mode,
+        preset,
         prefs,
-        weather_multiplier,
-        &offsets,
+        ctx.service_day,
+        ctx.hour_bucket,
         &live,
-        policy,
-    );
+        weather_multiplier,
+        true,
+        &mut warnings,
+    )
+    .await;
 
-    // For arrive_by, filter to journeys arriving at or before the deadline.
-    if let Some(deadline) = arrive_deadline {
-        shifted.retain(|(j, base)| {
-            let arrival = *base + chrono::Duration::seconds(j.arrive_s as i64);
-            arrival <= deadline
-        });
-    }
-
-    if shifted.is_empty() {
-        let local = anchor.with_timezone(&chrono_tz::America::Toronto);
-        warnings.push(match time_mode {
-            TimeMode::LeaveAt => format!(
-                "No route departing {} Toronto within max_transfers={}, max_walk_m={}m{}",
-                local.format("%H:%M"),
-                prefs.max_transfers,
-                prefs.max_walk_m,
-                if prefs.wheelchair_mode || prefs.avoid_stairs {
-                    " [accessible]"
-                } else {
-                    ""
-                },
-            ),
-            TimeMode::ArriveBy => format!(
-                "No route arriving before {} Toronto within max_transfers={}, max_walk_m={}m{}",
-                local.format("%H:%M"),
-                prefs.max_transfers,
-                prefs.max_walk_m,
-                if prefs.wheelchair_mode || prefs.avoid_stairs {
-                    " [accessible]"
-                } else {
-                    ""
-                },
-            ),
-        });
-    }
-
-    // ── Assemble each journey using its OWN base departure ──
-    let mut assembled: Vec<crate::journey::types::JourneyResponse> = shifted
-        .iter()
-        .map(|(j, base)| {
-            crate::journey::assemble::assemble(
-                &graph,
-                j,
-                *base,
-                &ctx.origin,
-                &ctx.destination,
-                &origin_candidates,
-                &dest_candidates,
-            )
-        })
+    let mut final_journeys: Vec<crate::score::ScoredJourney> = scored
+        .into_iter()
+        .filter(|s| s.journey.total_walk_m <= hard_cap)
         .collect();
 
-    // ── Inject walk-only alternative when origin→dest is walkable ──
-    let direct_m = haversine_m(
-        ctx.origin.lat,
-        ctx.origin.lon,
-        ctx.destination.lat,
-        ctx.destination.lon,
-    );
-    let walk_m = direct_m * prefs.detour_factor;
-    if walk_m <= prefs.max_walk_m as f64 {
-        let walk_ctx = crate::walk::types::WalkContext {
-            from_lat: ctx.origin.lat,
-            from_lon: ctx.origin.lon,
-            to_lat: ctx.destination.lat,
-            to_lon: ctx.destination.lon,
-            raw_distance_m: direct_m,
-            depart_at: anchor,
-            user: prefs,
-            weather: &state.weather,
-        };
-        let est = crate::walk::pipeline::estimate(&walk_ctx).await;
-        assembled.push(make_walk_only_journey(
-            anchor,
-            &ctx.origin,
-            &ctx.destination,
-            est.walk_m,
-            est.seconds,
-            est.breakdown,
-        ));
+    // ── Tier 2: 2× expansion ──
+    if final_journeys.is_empty() {
+        let tier2_walk = (prefs.max_walk_m * 2).min(5000) as i32;
+        if tier2_walk > prefs.max_walk_m {
+            let mut p2 = prefs.clone();
+            p2.max_walk_m = tier2_walk;
+
+            let mut w2: Vec<String> = Vec::new();
+            let s2 = run_plan_pipeline(
+                &graph,
+                &state.weather,
+                &reliability,
+                &ctx.origin,
+                &ctx.destination,
+                anchor,
+                time_mode,
+                preset,
+                &p2,
+                ctx.service_day,
+                ctx.hour_bucket,
+                &live,
+                weather_multiplier,
+                true,
+                &mut w2,
+            )
+            .await;
+
+            let mut f2: Vec<crate::score::ScoredJourney> = s2
+                .into_iter()
+                .filter(|s| s.journey.total_walk_m <= tier2_walk as f64)
+                .collect();
+            f2.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            if !f2.is_empty() {
+                let min_walk = f2
+                    .iter()
+                    .map(|s| s.journey.total_walk_m)
+                    .fold(f64::INFINITY, f64::min);
+                warnings.clear();
+                warnings.push(format!(
+                    "No journey within max_walk_m={}m. Found a route at {}m walk expansion needing {:.0}m total walk. \
+                     Accept it, or raise max_walk_m to at least {:.0}m.",
+                    prefs.max_walk_m,
+                    tier2_walk,
+                    min_walk,
+                    min_walk.ceil()
+                ));
+                final_journeys = f2;
+            }
+        }
     }
 
-    // ── Score with reliability cache ──
-    let reliability = state.reliability.read().await;
-    let score_ctx = ScoreContext {
-        requested_depart_at: anchor,
-        requested_arrive_at: arrive_deadline,
-        mode: time_mode,
-        max_walk_m: prefs.max_walk_m,
-        hour: ctx.hour_bucket,
-        day_type: ctx.service_day.as_str().to_string(),
-        reliability: if reliability.scores.is_empty() {
-            None
-        } else {
-            Some(crate::graph::reliability::ReliabilityCache {
-                scores: reliability.scores.clone(),
-                loaded_at: reliability.loaded_at,
-                row_count: reliability.row_count,
-            })
-        },
-    };
-    let mut scored = crate::score::score(assembled, preset, &score_ctx);
+    // ── Tier 3: 4× expansion (deep reach) ──
+    if final_journeys.is_empty() {
+        let tier3_walk = (prefs.max_walk_m * 4).min(5000) as i32;
+        if tier3_walk > prefs.max_walk_m * 2 {
+            let mut p3 = prefs.clone();
+            p3.max_walk_m = tier3_walk;
 
-    // ── Hard filter: journey-level walk cap ──
-    let max_walk = prefs.max_walk_m as f64;
-    let pre_filter = scored.len();
-    scored.retain(|s| s.journey.total_walk_m <= max_walk);
-    if scored.is_empty() && pre_filter > 0 {
-        warnings.push(format!(
-            "All routes exceeded max_walk_m ({}m). Try increasing it.",
-            prefs.max_walk_m
-        ));
+            let mut w3: Vec<String> = Vec::new();
+            let s3 = run_plan_pipeline(
+                &graph,
+                &state.weather,
+                &reliability,
+                &ctx.origin,
+                &ctx.destination,
+                anchor,
+                time_mode,
+                preset,
+                &p3,
+                ctx.service_day,
+                ctx.hour_bucket,
+                &live,
+                weather_multiplier,
+                true,
+                &mut w3,
+            )
+            .await;
+
+            let mut f3: Vec<crate::score::ScoredJourney> = s3
+                .into_iter()
+                .filter(|s| s.journey.total_walk_m <= tier3_walk as f64)
+                .collect();
+            f3.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            if !f3.is_empty() {
+                let min_walk = f3
+                    .iter()
+                    .map(|s| s.journey.total_walk_m)
+                    .fold(f64::INFINITY, f64::min);
+                warnings.clear();
+                warnings.push(format!(
+                    "No journey within max_walk_m={}m. Deep-search to {}m found a route needing {:.0}m total walk. \
+                     Accept it, or raise max_walk_m to at least {:.0}m.",
+                    prefs.max_walk_m,
+                    tier3_walk,
+                    min_walk,
+                    min_walk.ceil()
+                ));
+                final_journeys = f3;
+            }
+        }
+    }
+
+    // ── Tier 4: nearest running service advisory ──
+    if final_journeys.is_empty() {
+        warnings.clear();
+        let advisory = query_nearest_running_service(
+            &state.pg,
+            ctx.destination.lat,
+            ctx.destination.lon,
+            anchor,
+        )
+        .await;
+
+        match advisory {
+            Some(adv) => {
+                warnings.push(format!(
+                    "No transit route available at this hour. \
+                     Nearest stop with running service: {} (route {}, {:.0}m away, next departure in {} min). \
+                     Walk there, or try again at a different time.",
+                    adv.stop_name, adv.route_short_name, adv.dist_m, adv.next_dep_min
+                ));
+            }
+            None => {
+                warnings.push(
+                    "No transit route available. \
+                     No running service within 5km of the destination at this hour. \
+                     This location may require walking or a different mode of transport."
+                        .to_string(),
+                );
+            }
+        }
     }
 
     // ── Slice top 3 ──
-    let (recommended, alternatives) = if scored.is_empty() {
+    let (recommended, alternatives) = if final_journeys.is_empty() {
         (None, vec![])
     } else {
-        let mut iter = scored.into_iter();
+        let mut iter = final_journeys.into_iter();
         let first = iter.next().map(scored_to_json);
         let rest: Vec<serde_json::Value> = iter.take(2).map(scored_to_json).collect();
         (first, rest)
@@ -373,6 +518,94 @@ pub async fn plan(
     }))
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Nearest running service advisory (tier 4)
+// ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct Advisory {
+    stop_name: String,
+    dist_m: f64,
+    route_short_name: String,
+    next_dep_min: i64,
+}
+
+/// Find the nearest stop within 5km that has a departure in the next 3 hours.
+/// Returns None if no running service within that window or radius.
+async fn query_nearest_running_service(
+    pg: &sqlx::PgPool,
+    lat: f64,
+    lon: f64,
+    after: DateTime<Utc>,
+) -> Option<Advisory> {
+    let row: Option<(String, f64, String, i32)> = sqlx::query_as(
+        r#"
+        WITH candidate AS (
+            SELECT
+                s.stop_id,
+                s.stop_name,
+                (6371000 * acos(
+                    cos(radians($1::float8)) * cos(radians(s.stop_lat)) *
+                    cos(radians(s.stop_lon) - radians($2::float8)) +
+                    sin(radians($1::float8)) * sin(radians(s.stop_lat))
+                ))::float8 AS dist_m
+            FROM ref.stop_points s
+            WHERE s.stop_lat BETWEEN $1::float8 - 0.05 AND $1::float8 + 0.05
+              AND s.stop_lon BETWEEN $2::float8 - 0.07 AND $2::float8 + 0.07
+        ),
+        route_next AS (
+            SELECT
+                d.stop_id,
+                r.route_short_name,
+                MIN(d.departs_at) AS next_at
+            FROM ref.departures d
+            JOIN core.routes r ON d.route_id = r.route_id
+            WHERE d.departs_at > $3::timestamptz
+              AND d.departs_at < $3::timestamptz + interval '3 hours'
+              AND d.boardable = true
+              AND d.stop_id IN (SELECT stop_id FROM candidate)
+            GROUP BY d.stop_id, r.route_short_name
+        ),
+        ranked AS (
+            SELECT
+                stop_id,
+                route_short_name,
+                next_at,
+                ROW_NUMBER() OVER (PARTITION BY stop_id ORDER BY next_at) AS rn
+            FROM route_next
+        )
+        SELECT
+            c.stop_name,
+            c.dist_m,
+            r.route_short_name,
+            GREATEST(1, EXTRACT(EPOCH FROM (r.next_at - $3::timestamptz))::int / 60) AS next_dep_min
+        FROM candidate c
+        JOIN ranked r ON r.stop_id = c.stop_id AND r.rn = 1
+        WHERE c.dist_m < 5000
+        ORDER BY c.dist_m
+        LIMIT 1
+        "#,
+    )
+    .bind(lat)
+    .bind(lon)
+    .bind(after)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten();
+
+    row.map(|(stop_name, dist_m, route_short_name, next_dep_min)| Advisory {
+        stop_name,
+        dist_m,
+        route_short_name,
+        next_dep_min: next_dep_min as i64,
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ────────────────────────────────────────────────────────────────────────────
+
 fn gates_applied(preset: &crate::score::Preset) -> Vec<String> {
     let mut v = vec![
         "geo".into(),
@@ -386,7 +619,6 @@ fn gates_applied(preset: &crate::score::Preset) -> Vec<String> {
     v
 }
 
-/// Shape a `ScoredJourney` into the JSON body used by `/plan`.
 fn scored_to_json(s: crate::score::ScoredJourney) -> serde_json::Value {
     serde_json::json!({
         "journey": s.journey,
@@ -396,7 +628,6 @@ fn scored_to_json(s: crate::score::ScoredJourney) -> serde_json::Value {
     })
 }
 
-/// Synthetic walk-only journey — one WalkLeg from origin to dest.
 fn make_walk_only_journey(
     depart_at: DateTime<Utc>,
     origin: &LatLon,
@@ -446,7 +677,6 @@ fn make_walk_only_journey(
     }
 }
 
-/// Straight-line distance in meters.
 fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     const R: f64 = 6_371_000.0;
     let phi1 = lat1.to_radians();
@@ -744,10 +974,6 @@ pub async fn gates(
         "results": results,
     })))
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// /debug/raptor — raw (legacy) or assembled
-// ────────────────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct RaptorQuery {

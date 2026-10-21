@@ -28,7 +28,12 @@ pub struct WalkBreakdown {
 pub struct WalkContext<'a> {
     pub from_lat: f64,
     pub from_lon: f64,
+    /// Unused today: `raw_distance_m` is precomputed by the caller, and the
+    /// weather ingredient reads origin-only. Kept for terrain (elevation
+    /// delta) and route-aware weather when those ingredients land.
+    #[allow(dead_code)]
     pub to_lat: f64,
+    #[allow(dead_code)]
     pub to_lon: f64,
     pub raw_distance_m: f64,
     pub depart_at: DateTime<Utc>,

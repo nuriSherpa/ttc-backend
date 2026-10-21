@@ -398,9 +398,20 @@ pub async fn load(pg: &PgPool, opts: LoadOptions) -> anyhow::Result<Graph> {
 
     let duration = started.elapsed();
 
-    // Build the geo index from the finished stop list, capture count before move
-    let geo_index = super::geo::GeoIndex::build(&stops);
+        let geo_index = super::geo::GeoIndex::build(&stops);
     let cell_count = geo_index.cell_count();
+
+    // NEW — build transfer table
+    let transfer_table = super::transfer_table::build(
+        &stops,
+        &stop_idx_by_id,
+        &station_nodes,
+        &station_idx_by_id,
+        &pathway_edges,
+        &geo_index,
+    );
+    let transfer_edges = transfer_table.total_edges();
+    info!(edges = transfer_edges, "transfer table built");
 
     let graph = Graph {
         stops,
@@ -426,6 +437,7 @@ pub async fn load(pg: &PgPool, opts: LoadOptions) -> anyhow::Result<Graph> {
         load_duration_ms: duration.as_millis() as u64,
         horizon_days: opts.horizon_days,
         geo_index,
+        transfer_table,
     };
 
     info!(cells = cell_count, "geo index built");

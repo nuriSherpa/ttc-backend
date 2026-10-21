@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use chrono_tz::America::Toronto;
 use sqlx::{PgPool, Row};
 use tokio::sync::RwLock;

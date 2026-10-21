@@ -127,6 +127,7 @@ pub struct Graph {
     pub horizon_days: i32,
 
     pub geo_index: super::geo::GeoIndex,
+    pub transfer_table: super::transfer_table::TransferTable,
 }
 
 impl Graph {
